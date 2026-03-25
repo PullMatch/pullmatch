@@ -33,6 +33,24 @@ export async function fetchPRFiles(
   return data.map((f) => ({ filename: f.filename, status: f.status }));
 }
 
+export async function postPRComment(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  body: string,
+  token: string
+): Promise<void> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error ${res.status} posting comment: ${await res.text()}`);
+  }
+}
+
 export async function fetchRecentCommitters(
   owner: string,
   repo: string,

@@ -8,8 +8,7 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "../../"
   },
-  "include": ["src"]
+  "include": ["src", "../../packages/shared/src"]
 }

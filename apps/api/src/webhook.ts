@@ -1,5 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '../../../packages/shared/src/index.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -17,12 +18,68 @@ export interface ParsedPREvent {
   htmlUrl: string;
 }
 
-function stubAnalysisPipeline(event: ParsedPREvent): void {
-  // Stub: log parsed PR data. Future: call matchReviewers, risk assessment, etc.
-  console.log('[analysis] PR event queued for analysis:', JSON.stringify(event, null, 2));
+async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | undefined): Promise<void> {
+  console.log(`[analysis] Starting pipeline for PR #${event.prNumber} in ${event.repo}`);
+
+  if (!githubToken) {
+    console.warn('[analysis] GITHUB_TOKEN not set — skipping reviewer analysis');
+    return;
+  }
+
+  // 1. Fetch changed files
+  const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
+  if (prFiles.length === 0) {
+    console.log('[analysis] No files changed — skipping');
+    return;
+  }
+
+  const filenames = prFiles.map((f) => f.filename);
+  console.log(`[analysis] ${filenames.length} file(s) changed`);
+
+  // 2. Build contributor graph from commit history for changed files
+  const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+
+  // 3. Match top reviewers (excluding PR author)
+  const recommendations = matchReviewers(graph, event.author);
+
+  if (recommendations.length === 0) {
+    console.log('[analysis] No reviewer candidates found');
+    return;
+  }
+
+  // 4. Format and post comment
+  const comment = formatReviewerComment(event, recommendations);
+  await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+  console.log(`[analysis] Posted reviewer suggestions for PR #${event.prNumber}`);
+}
+
+function formatReviewerComment(
+  event: ParsedPREvent,
+  recommendations: Array<{ login: string; score: number; reasons: string[] }>
+): string {
+  const lines: string[] = [
+    '## PullMatch Reviewer Suggestions',
+    '',
+    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
+    '',
+  ];
+
+  for (const rec of recommendations) {
+    lines.push(`### @${rec.login} (score: ${rec.score})`);
+    for (const reason of rec.reasons) {
+      lines.push(`- ${reason}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('_Powered by [PullMatch](https://github.com/pullmatch)_');
+
+  return lines.join('\n');
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
+  const githubToken = process.env.GITHUB_TOKEN;
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -45,7 +102,10 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       htmlUrl: pr.html_url,
     };
 
-    stubAnalysisPipeline(parsed);
+    // Fire-and-forget: don't block webhook response on analysis
+    runAnalysisPipeline(parsed, githubToken).catch((err) => {
+      console.error(`[analysis] Pipeline error for PR #${parsed.prNumber}:`, err instanceof Error ? err.message : String(err));
+    });
   });
 
   const router = new Hono();
