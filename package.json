@@ -1,0 +1,10 @@
+{
+  "name": "pullmatch",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "PullMatch — the intelligence layer for software decisions",
+  "scripts": {
+    "validate:match": "node --experimental-strip-types scripts/validate-match.ts"
+  }
+}

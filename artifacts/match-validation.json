@@ -1,0 +1,169 @@
+{
+  "repo": "microsoft/vscode",
+  "prNumber": 304772,
+  "changedFiles": [
+    "src/vs/workbench/contrib/chat/browser/actions/chatNewActions.ts"
+  ],
+  "candidates": [
+    {
+      "login": "rebornix",
+      "exactCommits": 1,
+      "dirCommits": 0,
+      "latestCommit": "2026-02-27T01:34:29Z"
+    },
+    {
+      "login": "Copilot",
+      "exactCommits": 1,
+      "dirCommits": 0,
+      "latestCommit": "2026-02-17T20:08:01Z"
+    },
+    {
+      "login": "bpasero",
+      "exactCommits": 7,
+      "dirCommits": 0,
+      "latestCommit": "2026-02-15T07:31:38Z"
+    },
+    {
+      "login": "roblourens",
+      "exactCommits": 2,
+      "dirCommits": 3,
+      "latestCommit": "2026-03-17T22:07:52Z"
+    },
+    {
+      "login": "benibenj",
+      "exactCommits": 4,
+      "dirCommits": 0,
+      "latestCommit": "2026-01-20T16:24:16Z"
+    },
+    {
+      "login": "joshspicer",
+      "exactCommits": 2,
+      "dirCommits": 1,
+      "latestCommit": "2026-03-21T00:19:49Z"
+    },
+    {
+      "login": "meganrogge",
+      "exactCommits": 2,
+      "dirCommits": 0,
+      "latestCommit": "2026-01-09T21:54:27Z"
+    },
+    {
+      "login": "lszomoru",
+      "exactCommits": 1,
+      "dirCommits": 0,
+      "latestCommit": "2025-12-11T22:13:48Z"
+    },
+    {
+      "login": "connor4312",
+      "exactCommits": 4,
+      "dirCommits": 5,
+      "latestCommit": "2026-03-24T18:21:10Z"
+    },
+    {
+      "login": "hawkticehurst",
+      "exactCommits": 1,
+      "dirCommits": 0,
+      "latestCommit": "2025-12-03T11:27:51Z"
+    },
+    {
+      "login": "jrieken",
+      "exactCommits": 1,
+      "dirCommits": 0,
+      "latestCommit": "2025-11-05T11:31:47Z"
+    },
+    {
+      "login": "DonJayamanne",
+      "exactCommits": 0,
+      "dirCommits": 2,
+      "latestCommit": "2026-03-23T19:34:39Z"
+    },
+    {
+      "login": "vijayupadya",
+      "exactCommits": 0,
+      "dirCommits": 7,
+      "latestCommit": "2026-03-20T00:00:59Z"
+    },
+    {
+      "login": "pwang347",
+      "exactCommits": 0,
+      "dirCommits": 2,
+      "latestCommit": "2026-03-18T20:07:03Z"
+    },
+    {
+      "login": "eleanorjboyd",
+      "exactCommits": 0,
+      "dirCommits": 6,
+      "latestCommit": "2026-03-18T06:36:23Z"
+    },
+    {
+      "login": "mjbvz",
+      "exactCommits": 0,
+      "dirCommits": 3,
+      "latestCommit": "2026-03-13T23:46:28Z"
+    },
+    {
+      "login": "sandy081",
+      "exactCommits": 0,
+      "dirCommits": 1,
+      "latestCommit": "2026-03-10T10:09:40Z"
+    }
+  ],
+  "rankedReviewers": [
+    {
+      "rank": 1,
+      "login": "bpasero",
+      "score": 22.15,
+      "reasons": [
+        "7 commit(s) to exact changed file(s)",
+        "Most recent commit was 38 day(s) ago"
+      ]
+    },
+    {
+      "rank": 2,
+      "login": "connor4312",
+      "score": 18.98,
+      "reasons": [
+        "4 commit(s) to exact changed file(s)",
+        "5 commit(s) in the same directory/directories",
+        "Most recent commit was 1 day(s) ago"
+      ]
+    },
+    {
+      "rank": 3,
+      "login": "benibenj",
+      "score": 12.58,
+      "reasons": [
+        "4 commit(s) to exact changed file(s)",
+        "Most recent commit was 64 day(s) ago"
+      ]
+    }
+  ],
+  "timestamp": "2026-03-25T17:59:42.855Z",
+  "validationStatus": "pass",
+  "meta": {
+    "totalHistoryRecords": 56,
+    "candidateCount": 17,
+    "sampleCommits": [
+      {
+        "sha": "76080f7",
+        "author": "rebornix",
+        "date": "2026-02-27T01:34:29Z",
+        "message": "enhance new chat button functionality with additional icon variants and context "
+      },
+      {
+        "sha": "d914404",
+        "author": "Copilot",
+        "date": "2026-02-17T20:08:01Z",
+        "message": "Preserve session target when using Send to New Chat (#295185)"
+      },
+      {
+        "sha": "17a4867",
+        "author": "bpasero",
+        "date": "2026-02-15T07:31:38Z",
+        "message": "chat - remove redundant action to create new chat in auxiliary windows (#295423)"
+      }
+    ],
+    "endpoint": "/api/match",
+    "scriptVersion": "validate-match.ts@1.0"
+  }
+}
