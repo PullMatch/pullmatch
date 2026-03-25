@@ -1,0 +1,21 @@
+{
+  "name": "@pullmatch/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "PullMatch API server - GitHub App backend",
+  "scripts": {
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node --experimental-strip-types src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
