@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchPRFiles, buildContributorGraph, matchReviewers } from '@pullmatch/shared';
-import type { ReviewerRecommendation } from '@pullmatch/shared';
+
+const MIN_REVIEWERS = 3;
 
 interface MatchRequest {
   owner: string;
@@ -9,8 +10,14 @@ interface MatchRequest {
   author?: string;
 }
 
+interface Reviewer {
+  username: string;
+  score: number;
+  reasons: string[];
+}
+
 interface MatchResponse {
-  recommendations: ReviewerRecommendation[];
+  reviewers: Reviewer[];
   filesAnalyzed: number;
 }
 
@@ -30,21 +37,38 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const token = process.env.GITHUB_TOKEN;
+  const token = process.env.GITHUB_TOKEN_WRITE;
+  if (!token) {
+    return NextResponse.json(
+      { error: 'GITHUB_TOKEN_WRITE is not set — cannot fetch live GitHub data' },
+      { status: 500 }
+    );
+  }
 
   try {
+    console.debug(`[match] fetching PR files for ${owner}/${repo}#${prNumber}`);
     const files = await fetchPRFiles(owner, repo, prNumber, token);
     const filenames = files.map((f) => f.filename);
+    console.debug(`[match] analyzing ${filenames.length} file(s)`);
+
     const graph = await buildContributorGraph(owner, repo, filenames, token);
-    const recommendations = matchReviewers(graph, author);
+    console.debug(`[match] found ${graph.size} candidate reviewer(s)`);
+
+    const recommendations = matchReviewers(graph, author, MIN_REVIEWERS);
+    const reviewers: Reviewer[] = recommendations.map((r) => ({
+      username: r.login,
+      score: r.score,
+      reasons: r.reasons,
+    }));
 
     const response: MatchResponse = {
-      recommendations,
+      reviewers,
       filesAnalyzed: filenames.length,
     };
     return NextResponse.json(response);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[match] GitHub API error: ${message}`);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

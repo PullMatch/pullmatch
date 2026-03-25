@@ -25,11 +25,13 @@ export async function fetchPRFiles(
   token?: string
 ): Promise<PRFile[]> {
   const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`;
+  console.debug(`[github] GET ${url}`);
   const res = await fetch(url, { headers: headers(token) });
   if (!res.ok) {
     throw new Error(`GitHub API error ${res.status}: ${await res.text()}`);
   }
   const data = await res.json() as Array<{ filename: string; status: string }>;
+  console.debug(`[github] fetchPRFiles returned ${data.length} file(s)`);
   return data.map((f) => ({ filename: f.filename, status: f.status }));
 }
 
@@ -59,9 +61,11 @@ export async function fetchRecentCommitters(
   maxCommits = 30
 ): Promise<Committer[]> {
   const url = `${GITHUB_API}/repos/${owner}/${repo}/commits?path=${encodeURIComponent(filename)}&per_page=${maxCommits}`;
+  console.debug(`[github] GET ${url}`);
   const res = await fetch(url, { headers: headers(token) });
   if (!res.ok) {
     // Non-critical: return empty on error (e.g. file not in default branch yet)
+    console.debug(`[github] fetchRecentCommitters non-critical error ${res.status} for ${filename}`);
     return [];
   }
   const data = await res.json() as Array<{
