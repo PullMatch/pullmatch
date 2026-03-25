@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
+    "@octokit/webhooks": "^14.2.0",
     "hono": "^4.7.0"
   },
   "devDependencies": {
