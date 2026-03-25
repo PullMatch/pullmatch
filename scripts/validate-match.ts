@@ -6,19 +6,21 @@
  * /artifacts/match-validation.md and /artifacts/match-validation.json.
  *
  * Fails with a non-zero exit code if:
- *   - GITHUB_TOKEN_ENGINEER is missing
+ *   - GITHUB_TOKEN_WRITE is missing
  *   - The GitHub API returns no files
  *   - Fewer than 1 reviewer is returned
  *   - Reviewers appear to be hardcoded/mocked
+ *   - PR author appears in the matched reviewers
  *
  * Usage:
- *   GITHUB_TOKEN_ENGINEER=<token> node --experimental-strip-types scripts/validate-match.ts \
+ *   GITHUB_TOKEN_WRITE=<token> node --experimental-strip-types scripts/validate-match.ts \
  *     [owner] [repo] [prNumber] [author]
  *
  * Or via npm:
  *   npm run validate:match
  *
  * Defaults to microsoft/vscode PR #304772 when no args are provided.
+ * When [author] is omitted, fetches the PR author from the GitHub API automatically.
  */
 
 import { fetchPRFiles, buildContributorGraph, matchReviewers } from '../packages/shared/src/index.ts';
@@ -29,17 +31,45 @@ import { join } from 'node:path';
 const OWNER  = process.argv[2] ?? 'microsoft';
 const REPO   = process.argv[3] ?? 'vscode';
 const PR_NUM = Number(process.argv[4] ?? 304772);
-const AUTHOR = process.argv[5] ?? '';
 const TOP_N  = 3;
 
 // Known hardcoded values that would indicate mocked data
 const HARDCODED_LOGINS = new Set(['alice', 'bob', 'charlie', 'user1', 'user2', 'test-user', 'reviewer1']);
 
+async function fetchPRAuthor(owner: string, repo: string, prNumber: number, token: string): Promise<string> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' },
+  });
+  if (!res.ok) {
+    console.warn(`[validate-match] WARNING: Could not fetch PR metadata (${res.status}) — author exclusion skipped`);
+    return '';
+  }
+  const data = await res.json() as { user?: { login?: string } };
+  return data?.user?.login ?? '';
+}
+
 async function main() {
-  const token = process.env.GITHUB_TOKEN_ENGINEER;
+  const token = process.env.GITHUB_TOKEN_WRITE;
   if (!token) {
-    console.error('ERROR: GITHUB_TOKEN_ENGINEER is not set');
+    console.error('ERROR: GITHUB_TOKEN_WRITE is not set');
     process.exit(1);
+  }
+
+  // Resolve author: use CLI arg if given, otherwise fetch from GitHub API
+  const authorArg = process.argv[5] ?? '';
+  let author: string;
+  if (authorArg) {
+    author = authorArg;
+    console.log(`[validate-match] PR author provided via CLI: @${author}`);
+  } else {
+    console.log(`[validate-match] Fetching PR author from GitHub API...`);
+    author = await fetchPRAuthor(OWNER, REPO, PR_NUM, token);
+    if (author) {
+      console.log(`[validate-match] PR author resolved: @${author} (will be excluded from results)`);
+    } else {
+      console.warn(`[validate-match] WARNING: PR author unknown — no author will be excluded`);
+    }
   }
 
   console.log(`\n[validate-match] Analyzing ${OWNER}/${REPO}#${PR_NUM} ...`);
@@ -66,8 +96,8 @@ async function main() {
     totalHistoryRecords += entry.exactCommits + entry.dirCommits;
   }
 
-  // 3. Match reviewers
-  const reviewers = matchReviewers(graph, AUTHOR, TOP_N);
+  // 3. Match reviewers (PR author excluded)
+  const reviewers = matchReviewers(graph, author, TOP_N);
   if (reviewers.length === 0) {
     console.error('ERROR: matchReviewers returned 0 results — no reviewers found in commit history');
     process.exit(1);
@@ -82,7 +112,17 @@ async function main() {
   }
   console.log(`[validate-match] ${reviewers.length} reviewer(s) matched — no hardcoded values detected`);
 
-  // 5. Fetch raw API sample for traceability
+  // 5. Validate PR author is not in results
+  if (author) {
+    const authorInResults = reviewers.some((r) => r.login === author);
+    if (authorInResults) {
+      console.error(`ERROR: PR author "@${author}" appears in matched reviewers — exclusion failed`);
+      process.exit(1);
+    }
+    console.log(`[validate-match] PR author @${author} correctly excluded from results`);
+  }
+
+  // 6. Fetch raw API sample for traceability
   const GITHUB_API = 'https://api.github.com';
   const sampleFile = filenames[0];
   const sampleUrl = `${GITHUB_API}/repos/${OWNER}/${REPO}/commits?path=${encodeURIComponent(sampleFile)}&per_page=5`;
@@ -108,10 +148,11 @@ async function main() {
 
   const timestamp = new Date().toISOString();
 
-  // 6. Build structured JSON output
+  // 7. Build structured JSON output
   const jsonOutput = {
     repo: `${OWNER}/${REPO}`,
     prNumber: PR_NUM,
+    excludedAuthor: author || null,
     changedFiles: filenames,
     candidates: Array.from(graph.values()).map((e: ContributorEntry) => ({
       login: e.login,
@@ -132,11 +173,11 @@ async function main() {
       candidateCount,
       sampleCommits,
       endpoint: `/api/match`,
-      scriptVersion: 'validate-match.ts@1.0',
+      scriptVersion: 'validate-match.ts@1.1',
     },
   };
 
-  // 7. Write artifacts
+  // 8. Write artifacts
   const artifactDir = join(process.cwd(), 'artifacts');
   mkdirSync(artifactDir, { recursive: true });
 
@@ -145,13 +186,14 @@ async function main() {
   writeFileSync(jsonPath, JSON.stringify(jsonOutput, null, 2));
   console.log(`[validate-match] JSON artifact written to artifacts/match-validation.json`);
 
-  // 8. Build markdown artifact
+  // 9. Build markdown artifact
   const mdLines: string[] = [
     '# PullMatch — Reviewer Match Validation',
     '',
     `**Date:** ${timestamp}`,
     `**Repo:** ${OWNER}/${REPO}`,
     `**PR:** #${PR_NUM}`,
+    `**PR Author (excluded):** ${author ? `@${author}` : '(unknown)'}`,
     `**Script:** scripts/validate-match.ts`,
     `**Endpoint:** /api/match`,
     '',
@@ -163,6 +205,7 @@ async function main() {
     '',
     `- Commits/history records analyzed: **${totalHistoryRecords}** (across all changed files and parent directories)`,
     `- Candidate reviewers found: **${candidateCount}**`,
+    `- PR author excluded: **${author ? `@${author}` : 'none'}**`,
     '',
     '## Raw GitHub API Sample',
     '',
@@ -191,7 +234,8 @@ async function main() {
     '## Validation Result',
     '',
     '- **Status:** PASS',
-    '- **Token used:** GITHUB_TOKEN_ENGINEER',
+    `- **Token used:** GITHUB_TOKEN_WRITE`,
+    `- **Author excluded:** ${author ? `@${author}` : 'none'}`,
     '- **Data source:** Live GitHub API — no fixtures or mocks',
     '- **Reproducibility:** Results are deterministic for the same repo/PR; recency scores vary with wall-clock time (expected)',
     '',
@@ -202,7 +246,7 @@ async function main() {
     '- Directory-level commits use the parent directory path, not subdirectories',
     '',
     '---',
-    '_Generated by scripts/validate-match.ts — live GitHub API data via GITHUB_TOKEN_ENGINEER, no mocks._',
+    '_Generated by scripts/validate-match.ts — live GitHub API data via GITHUB_TOKEN_WRITE, no mocks._',
   ];
 
   const mdPath = join(artifactDir, 'match-validation.md');
@@ -210,6 +254,7 @@ async function main() {
   console.log(`[validate-match] Markdown artifact written to artifacts/match-validation.md`);
 
   console.log('\n[validate-match] PASS');
+  console.log(`  Excluded author: @${author || '(none)'}`);
   console.log(`  Top reviewer: @${reviewers[0].login} (score: ${reviewers[0].score})`);
 }
 

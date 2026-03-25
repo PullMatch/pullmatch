@@ -1,6 +1,7 @@
 {
   "repo": "microsoft/vscode",
   "prNumber": 304772,
+  "excludedAuthor": "bpasero",
   "changedFiles": [
     "src/vs/workbench/contrib/chat/browser/actions/chatNewActions.ts"
   ],
@@ -111,15 +112,6 @@
   "rankedReviewers": [
     {
       "rank": 1,
-      "login": "bpasero",
-      "score": 22.15,
-      "reasons": [
-        "7 commit(s) to exact changed file(s)",
-        "Most recent commit was 38 day(s) ago"
-      ]
-    },
-    {
-      "rank": 2,
       "login": "connor4312",
       "score": 18.98,
       "reasons": [
@@ -129,16 +121,26 @@
       ]
     },
     {
-      "rank": 3,
+      "rank": 2,
       "login": "benibenj",
       "score": 12.58,
       "reasons": [
         "4 commit(s) to exact changed file(s)",
         "Most recent commit was 64 day(s) ago"
       ]
+    },
+    {
+      "rank": 3,
+      "login": "roblourens",
+      "score": 10.83,
+      "reasons": [
+        "2 commit(s) to exact changed file(s)",
+        "3 commit(s) in the same directory/directories",
+        "Most recent commit was 8 day(s) ago"
+      ]
     }
   ],
-  "timestamp": "2026-03-25T17:59:42.855Z",
+  "timestamp": "2026-03-25T18:09:37.710Z",
   "validationStatus": "pass",
   "meta": {
     "totalHistoryRecords": 56,
@@ -164,6 +166,6 @@
       }
     ],
     "endpoint": "/api/match",
-    "scriptVersion": "validate-match.ts@1.0"
+    "scriptVersion": "validate-match.ts@1.1"
   }
 }
