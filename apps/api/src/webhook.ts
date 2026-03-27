@@ -1,6 +1,7 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
 import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '../../../packages/shared/src/index.ts';
+import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -19,22 +20,22 @@ export interface ParsedPREvent {
 }
 
 async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | undefined): Promise<void> {
-  console.log(`[analysis] Starting pipeline for PR #${event.prNumber} in ${event.repo}`);
+  logger.info('Starting analysis pipeline', { pr: event.prNumber, repo: event.repo });
 
   if (!githubToken) {
-    console.warn('[analysis] GITHUB_TOKEN not set — skipping reviewer analysis');
+    logger.warn('GITHUB_TOKEN not set — skipping reviewer analysis');
     return;
   }
 
   // 1. Fetch changed files
   const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
   if (prFiles.length === 0) {
-    console.log('[analysis] No files changed — skipping');
+    logger.info('No files changed — skipping', { pr: event.prNumber });
     return;
   }
 
   const filenames = prFiles.map((f) => f.filename);
-  console.log(`[analysis] ${filenames.length} file(s) changed`);
+  logger.info('Files changed', { pr: event.prNumber, count: filenames.length });
 
   // 2. Build contributor graph from commit history for changed files
   const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
@@ -43,14 +44,14 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
   const recommendations = matchReviewers(graph, event.author);
 
   if (recommendations.length === 0) {
-    console.log('[analysis] No reviewer candidates found');
+    logger.info('No reviewer candidates found', { pr: event.prNumber });
     return;
   }
 
   // 4. Format and post comment
   const comment = formatReviewerComment(event, recommendations);
   await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
-  console.log(`[analysis] Posted reviewer suggestions for PR #${event.prNumber}`);
+  logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
 }
 
 function formatReviewerComment(
@@ -79,7 +80,7 @@ function formatReviewerComment(
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
-  const githubToken = process.env.GITHUB_TOKEN;
+  const githubToken = process.env.GITHUB_TOKEN_WRITE;
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -104,7 +105,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
 
     // Fire-and-forget: don't block webhook response on analysis
     runAnalysisPipeline(parsed, githubToken).catch((err) => {
-      console.error(`[analysis] Pipeline error for PR #${parsed.prNumber}:`, err instanceof Error ? err.message : String(err));
+      logger.error('Pipeline error', { pr: parsed.prNumber, error: err instanceof Error ? err.message : String(err) });
     });
   });
 
@@ -122,6 +123,8 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       return c.json({ error: 'Missing X-GitHub-Event header' }, 400);
     }
 
+    logger.info('Webhook received', { event: eventName, deliveryId });
+
     const rawBody = await c.req.text();
 
     try {
@@ -134,7 +137,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[webhook] Error processing event:', message);
+      logger.error('Webhook processing failed', { event: eventName, deliveryId, error: message });
       // Return 400 for signature failures, keeping 5xx for unexpected errors
       return c.json({ error: 'Webhook verification or processing failed' }, 400);
     }

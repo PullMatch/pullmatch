@@ -1,23 +1,39 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { createWebhookRouter } from './webhook.ts';
+import { logger } from './logger.ts';
 
+// --- Environment validation ---
+const required = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN_WRITE'] as const;
+const missing = required.filter((key) => !process.env[key]);
+
+if (missing.length > 0) {
+  logger.error('Missing required environment variables', { missing });
+  process.exit(1);
+}
+
+const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET!;
+const port = Number(process.env.PORT) || 3000;
+
+// --- Startup log ---
+logger.info('Starting PullMatch API', {
+  port,
+  webhookSecretSet: true,
+  githubTokenWriteSet: true,
+  githubAppId: process.env.GITHUB_APP_ID ? 'set' : 'unset',
+  version: process.env.npm_package_version ?? '0.0.1',
+});
+
+// --- App setup ---
 const app = new Hono();
 
 app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
-if (!webhookSecret) {
-  console.warn('[startup] WARNING: GITHUB_WEBHOOK_SECRET not set — webhook endpoint will reject all requests');
-}
-
-const webhookRouter = createWebhookRouter(webhookSecret ?? 'unset');
+const webhookRouter = createWebhookRouter(webhookSecret);
 app.route('/', webhookRouter);
 
-const port = Number(process.env.PORT) || 3000;
-
 serve({ fetch: app.fetch, port }, () => {
-  console.log(`PullMatch API running on port ${port}`);
+  logger.info(`PullMatch API running on port ${port}`);
 });
