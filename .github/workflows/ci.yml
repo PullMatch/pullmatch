@@ -10,29 +10,26 @@ jobs:
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            apps/api/package-lock.json
-            apps/web/package-lock.json
-            packages/shared/package-lock.json
+          cache: 'pnpm'
 
-      - name: Install API deps
-        run: npm ci
-        working-directory: apps/api
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck API
-        run: npm run typecheck
-        working-directory: apps/api
-
-      - name: Install shared deps
-        run: npm ci
-        working-directory: packages/shared
+        run: pnpm --filter @pullmatch/api run typecheck
 
       - name: Typecheck shared
-        run: npm run typecheck
-        working-directory: packages/shared
+        run: pnpm --filter @pullmatch/shared run typecheck
