@@ -9,6 +9,12 @@ This file was created as a test PR to validate the PullMatch GitHub App webhook 
 - **GitHub App**: PullMatch (registered on PullMatch org)
 - **Target**: Verify `pull_request.opened` event reaches local API via tunnel
 
+## Validation Results
+
+- **Push event**: received and verified ✓ (delivery `532c8ae0`)
+- **Installation event**: received ✓ (delivery `650376a0`)
+- **Pull request event**: pending — this commit triggers synchronize
+
 ## Expected Flow
 
 1. PR opened on `PullMatch/pullmatch`
