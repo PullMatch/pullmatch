@@ -35,6 +35,24 @@ export async function fetchPRFiles(
   return data.map((f) => ({ filename: f.filename, status: f.status }));
 }
 
+export async function fetchPRCommitMessages(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token?: string
+): Promise<string[]> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100`;
+  console.debug(`[github] GET ${url}`);
+  const res = await fetch(url, { headers: headers(token) });
+  if (!res.ok) {
+    throw new Error(`GitHub API error ${res.status}: ${await res.text()}`);
+  }
+  const data = await res.json() as Array<{ commit?: { message?: string } }>;
+  return data
+    .map((entry) => entry.commit?.message?.trim() ?? '')
+    .filter((message) => message.length > 0);
+}
+
 export async function postPRComment(
   owner: string,
   repo: string,

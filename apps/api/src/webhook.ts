@@ -1,6 +1,14 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '../../../packages/shared/src/index.ts';
+import {
+  fetchPRFiles,
+  fetchPRCommitMessages,
+  buildContributorGraph,
+  matchReviewers,
+  generatePRContextBrief,
+  postPRComment,
+} from '../../../packages/shared/src/index.ts';
+import type { ReviewerRecommendation, ReviewerContextSection } from '../../../packages/shared/src/index.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -18,7 +26,29 @@ export interface ParsedPREvent {
   htmlUrl: string;
 }
 
-async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | undefined): Promise<void> {
+interface AnalysisPipelineDeps {
+  fetchPRFiles: typeof fetchPRFiles;
+  fetchPRCommitMessages: typeof fetchPRCommitMessages;
+  buildContributorGraph: typeof buildContributorGraph;
+  matchReviewers: typeof matchReviewers;
+  generatePRContextBrief: typeof generatePRContextBrief;
+  postPRComment: typeof postPRComment;
+}
+
+const defaultPipelineDeps: AnalysisPipelineDeps = {
+  fetchPRFiles,
+  fetchPRCommitMessages,
+  buildContributorGraph,
+  matchReviewers,
+  generatePRContextBrief,
+  postPRComment,
+};
+
+export async function runAnalysisPipeline(
+  event: ParsedPREvent,
+  githubToken: string | undefined,
+  deps: AnalysisPipelineDeps = defaultPipelineDeps
+): Promise<void> {
   console.log(`[analysis] Starting pipeline for PR #${event.prNumber} in ${event.repo}`);
 
   if (!githubToken) {
@@ -27,7 +57,7 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
   }
 
   // 1. Fetch changed files
-  const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
+  const prFiles = await deps.fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
   if (prFiles.length === 0) {
     console.log('[analysis] No files changed — skipping');
     return;
@@ -37,37 +67,71 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
   console.log(`[analysis] ${filenames.length} file(s) changed`);
 
   // 2. Build contributor graph from commit history for changed files
-  const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  const graph = await deps.buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
 
   // 3. Match top reviewers (excluding PR author)
-  const recommendations = matchReviewers(graph, event.author);
+  const recommendations = deps.matchReviewers(graph, event.author);
 
   if (recommendations.length === 0) {
     console.log('[analysis] No reviewer candidates found');
     return;
   }
 
-  // 4. Format and post comment
-  const comment = formatReviewerComment(event, recommendations);
-  await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+  // 4. Generate reviewer context briefs
+  let commitMessages: string[] = [];
+  try {
+    commitMessages = await deps.fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[analysis] Unable to fetch PR commit messages; continuing without them: ${message}`);
+  }
+
+  const contextBrief = deps.generatePRContextBrief({
+    prId: `${event.owner}/${event.repoName}#${event.prNumber}`,
+    prTitle: event.title,
+    files: prFiles,
+    commitMessages,
+    recommendations,
+    contributorGraph: graph,
+  });
+
+  // 5. Format and post comment
+  const comment = formatReviewerComment(event, recommendations, contextBrief.reviewerSections);
+  await deps.postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
   console.log(`[analysis] Posted reviewer suggestions for PR #${event.prNumber}`);
 }
 
 function formatReviewerComment(
   event: ParsedPREvent,
-  recommendations: Array<{ login: string; score: number; reasons: string[] }>
+  recommendations: ReviewerRecommendation[],
+  reviewerSections: ReviewerContextSection[]
 ): string {
+  const reviewerBriefByLogin = new Map(reviewerSections.map((section) => [section.login, section] as const));
+
   const lines: string[] = [
     '## PullMatch Reviewer Suggestions',
     '',
-    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
+    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership, recent activity, and review context.`,
     '',
   ];
 
   for (const rec of recommendations) {
+    const brief = reviewerBriefByLogin.get(rec.login);
     lines.push(`### @${rec.login} (score: ${rec.score})`);
+    lines.push('Recommendation signals:');
     for (const reason of rec.reasons) {
       lines.push(`- ${reason}`);
+    }
+    if (brief) {
+      lines.push('Context brief:');
+      lines.push('Why this reviewer:');
+      for (const reason of brief.whyPicked) {
+        lines.push(`- ${reason}`);
+      }
+      lines.push('Focus areas:');
+      for (const area of brief.focusAreas) {
+        lines.push(`- ${area}`);
+      }
     }
     lines.push('');
   }
