@@ -23,7 +23,7 @@ const originalFetch = globalThis.fetch;
 globalThis.fetch = async function (...args) {
   const url = String(args[0]);
   if (url.includes('api.github.com')) fetchCallCount++;
-  return originalFetch.apply(this, args);
+  return originalFetch(...args);
 } as typeof fetch;
 
 describe('match-integration (live GitHub API)', { skip: !TOKEN }, () => {
