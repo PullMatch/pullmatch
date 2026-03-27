@@ -16,7 +16,7 @@ This file was created as a test PR to validate the PullMatch GitHub App webhook 
 - **Pull request event**: received ✓ (deliveries `d0876b70`, `df8660e0`, `e4f2c690`)
 - **Analysis pipeline**: triggers correctly ✓ (PR #8)
 - **Production API**: live at `https://pullmatch-api-prod.fly.dev` ✓
-- **Full pipeline test**: this commit triggers synchronize with valid token
+- **Full pipeline test**: production secret aligned, triggering final synchronize
 
 ## Expected Flow
 
