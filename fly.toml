@@ -1,4 +1,4 @@
-app = 'pullmatch-api'
+app = 'pullmatch-api-prod'
 primary_region = 'iad'
 
 [build]
