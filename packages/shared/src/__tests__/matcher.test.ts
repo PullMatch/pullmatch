@@ -12,13 +12,17 @@ function makeGraph(entries: ContributorEntry[]): Map<string, ContributorEntry> {
 const recentDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(); // 5 days ago
 const oldDate = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString(); // 200 days ago
 
+function entry(overrides: Partial<ContributorEntry> & { login: string; exactCommits: number; dirCommits: number; latestCommit: string }): ContributorEntry {
+  return { isCodeOwner: false, codeOwnerFiles: 0, ...overrides };
+}
+
 describe('matchReviewers', () => {
   it('returns top 3 contributors by score', () => {
     const graph = makeGraph([
-      { login: 'alice', exactCommits: 5, dirCommits: 0, latestCommit: recentDate },
-      { login: 'bob', exactCommits: 3, dirCommits: 0, latestCommit: recentDate },
-      { login: 'carol', exactCommits: 1, dirCommits: 0, latestCommit: recentDate },
-      { login: 'dave', exactCommits: 0, dirCommits: 2, latestCommit: recentDate },
+      entry({ login: 'alice', exactCommits: 5, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'bob', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'carol', exactCommits: 1, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'dave', exactCommits: 0, dirCommits: 2, latestCommit: recentDate }),
     ]);
     const results = matchReviewers(graph, 'other');
     assert.equal(results.length, 3);
@@ -29,8 +33,8 @@ describe('matchReviewers', () => {
 
   it('excludes the PR author', () => {
     const graph = makeGraph([
-      { login: 'alice', exactCommits: 10, dirCommits: 0, latestCommit: recentDate },
-      { login: 'bob', exactCommits: 3, dirCommits: 0, latestCommit: recentDate },
+      entry({ login: 'alice', exactCommits: 10, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'bob', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
     ]);
     const results = matchReviewers(graph, 'alice');
     assert.equal(results.length, 1);
@@ -44,25 +48,17 @@ describe('matchReviewers', () => {
 
   it('ranks recent committers higher than stale ones with same commit count', () => {
     const graph = makeGraph([
-      { login: 'stale', exactCommits: 3, dirCommits: 0, latestCommit: oldDate },
-      { login: 'fresh', exactCommits: 3, dirCommits: 0, latestCommit: recentDate },
+      entry({ login: 'stale', exactCommits: 3, dirCommits: 0, latestCommit: oldDate }),
+      entry({ login: 'fresh', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
     ]);
     const results = matchReviewers(graph, 'other');
     assert.equal(results[0].login, 'fresh');
   });
 
   it('weights exact file commits higher than directory commits', () => {
-    const graph = makeGraph([
-      { login: 'dirOnly', exactCommits: 0, dirCommits: 10, latestCommit: recentDate },
-      { login: 'exactOwner', exactCommits: 2, dirCommits: 0, latestCommit: recentDate },
-    ]);
-    const results = matchReviewers(graph, 'other');
-    // exactOwner: 2*3 + 0 + recency*2 = 6 + ~2 = ~8
-    // dirOnly: 0 + 10*1 + recency*2 = 10 + ~2 = ~12... actually dirOnly wins here
-    // Let's just check that exactOwner scores correctly with 1 exact commit
     const dirGraph = makeGraph([
-      { login: 'dirOnly', exactCommits: 0, dirCommits: 2, latestCommit: recentDate },
-      { login: 'exactOwner', exactCommits: 2, dirCommits: 0, latestCommit: recentDate },
+      entry({ login: 'dirOnly', exactCommits: 0, dirCommits: 2, latestCommit: recentDate }),
+      entry({ login: 'exactOwner', exactCommits: 2, dirCommits: 0, latestCommit: recentDate }),
     ]);
     const r = matchReviewers(dirGraph, 'other');
     // exactOwner: 2*3 + 0 + ~2 = 8; dirOnly: 0 + 2 + ~2 = 4 — exactOwner wins
@@ -71,8 +67,8 @@ describe('matchReviewers', () => {
 
   it('uses alphabetical tie-breaking for determinism', () => {
     const graph = makeGraph([
-      { login: 'zara', exactCommits: 2, dirCommits: 0, latestCommit: recentDate },
-      { login: 'anna', exactCommits: 2, dirCommits: 0, latestCommit: recentDate },
+      entry({ login: 'zara', exactCommits: 2, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'anna', exactCommits: 2, dirCommits: 0, latestCommit: recentDate }),
     ]);
     const results = matchReviewers(graph, 'other', 2);
     assert.equal(results[0].login, 'anna');
@@ -81,11 +77,31 @@ describe('matchReviewers', () => {
 
   it('includes reasons in recommendations', () => {
     const graph = makeGraph([
-      { login: 'alice', exactCommits: 2, dirCommits: 1, latestCommit: recentDate },
+      entry({ login: 'alice', exactCommits: 2, dirCommits: 1, latestCommit: recentDate }),
     ]);
     const results = matchReviewers(graph, 'bob');
     assert.equal(results.length, 1);
     assert.ok(results[0].reasons.length >= 2);
     assert.ok(results[0].reasons[0].includes('2'));
+  });
+
+  it('boosts code owners above commit-only candidates', () => {
+    const graph = makeGraph([
+      entry({ login: 'committer', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'owner', exactCommits: 1, dirCommits: 0, latestCommit: recentDate, isCodeOwner: true, codeOwnerFiles: 2 }),
+    ]);
+    const results = matchReviewers(graph, 'other', 2);
+    // owner: 1*3 + 0 + ~2 + 2*4 = 3 + ~2 + 8 = ~13
+    // committer: 3*3 + 0 + ~2 = 9 + ~2 = ~11
+    assert.equal(results[0].login, 'owner');
+    assert.ok(results[0].reasons.some((r) => r.includes('code owner')));
+  });
+
+  it('code owner reason shows file count', () => {
+    const graph = makeGraph([
+      entry({ login: 'alice', exactCommits: 1, dirCommits: 0, latestCommit: recentDate, isCodeOwner: true, codeOwnerFiles: 3 }),
+    ]);
+    const results = matchReviewers(graph, 'bob');
+    assert.ok(results[0].reasons.some((r) => r.includes('3 changed file(s)')));
   });
 });

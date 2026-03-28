@@ -1,0 +1,21 @@
+# PullMatch CODEOWNERS
+# Used for reviewer suggestion scoring (codeOwner signal)
+
+# Default owner for everything
+* @rodchalski
+
+# API service
+apps/api/ @rodchalski
+
+# Shared packages (matching engine)
+packages/shared/src/matcher.ts @rodchalski
+packages/shared/src/contributor-graph.ts @rodchalski
+packages/shared/src/codeowners.ts @rodchalski
+packages/shared/src/github.ts @rodchalski
+
+# Web app
+apps/web/ @rodchalski
+
+# Infrastructure & deployment
+fly.toml @rodchalski
+.github/workflows/ @rodchalski

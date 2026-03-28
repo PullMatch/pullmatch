@@ -13,12 +13,13 @@ function recencyScore(latestCommit: string): number {
  * Score each contributor and return top N, excluding the PR author.
  *
  * Scoring formula (deterministic):
- *   score = exactCommits * 3 + dirCommits * 1 + recencyScore * 2
+ *   score = exactCommits * 3 + dirCommits * 1 + recencyScore * 2 + codeOwnerBonus * 4
  *
  * Weights rationale:
  * - exactCommits (3x): direct ownership of the changed files
  * - dirCommits (1x): contextual familiarity with the same directories
  * - recency (2x on [0,1]): recent contributors are more likely to be available and up-to-date
+ * - codeOwnerBonus (4x): designated CODEOWNERS get the strongest boost
  *
  * Tie-breaking: alphabetical by login (stable, deterministic).
  */
@@ -32,7 +33,9 @@ export function matchReviewers(
   for (const entry of graph.values()) {
     if (entry.login === prAuthor) continue;
     const recency = recencyScore(entry.latestCommit);
-    const score = entry.exactCommits * 3 + entry.dirCommits * 1 + recency * 2;
+    const codeOwnerBonus = entry.isCodeOwner ? (entry.codeOwnerFiles ?? 0) : 0;
+    const score =
+      entry.exactCommits * 3 + entry.dirCommits * 1 + recency * 2 + codeOwnerBonus * 4;
     candidates.push({ entry, score });
   }
 
@@ -49,6 +52,9 @@ export function matchReviewers(
     }
     if (entry.dirCommits > 0) {
       reasons.push(`${entry.dirCommits} commit(s) in the same directory/directories`);
+    }
+    if (entry.isCodeOwner) {
+      reasons.push(`Designated code owner for ${entry.codeOwnerFiles ?? 0} changed file(s)`);
     }
     const ageDays = Math.round(
       (Date.now() - new Date(entry.latestCommit).getTime()) / (1000 * 60 * 60 * 24)
