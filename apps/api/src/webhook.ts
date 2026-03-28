@@ -1,6 +1,7 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, generateContextBrief } from '@pullmatch/shared';
+import type { ContextBrief } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -48,15 +49,26 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
     return;
   }
 
-  // 4. Format and post comment
-  const comment = formatReviewerComment(event, recommendations);
+  // 4. Generate context briefs for each reviewer
+  const briefs = new Map<string, ContextBrief>();
+  for (const rec of recommendations) {
+    briefs.set(rec.login, generateContextBrief(
+      { title: event.title, branch: event.branch, filesChanged: filenames },
+      rec.login,
+      graph
+    ));
+  }
+
+  // 5. Format and post comment
+  const comment = formatReviewerComment(event, recommendations, briefs);
   await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
   logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
 }
 
 function formatReviewerComment(
   event: ParsedPREvent,
-  recommendations: Array<{ login: string; score: number; reasons: string[] }>
+  recommendations: Array<{ login: string; score: number; reasons: string[] }>,
+  briefs: Map<string, ContextBrief>
 ): string {
   const lines: string[] = [
     '## PullMatch Reviewer Suggestions',
@@ -67,6 +79,10 @@ function formatReviewerComment(
 
   for (const rec of recommendations) {
     lines.push(`### @${rec.login} (score: ${rec.score})`);
+    const brief = briefs.get(rec.login);
+    if (brief && brief.focusAreas.length > 0) {
+      lines.push(`**Focus areas:** ${brief.focusAreas.join(', ')}`);
+    }
     for (const reason of rec.reasons) {
       lines.push(`- ${reason}`);
     }

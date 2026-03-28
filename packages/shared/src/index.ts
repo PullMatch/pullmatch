@@ -27,3 +27,4 @@ export type { PRFile, Committer } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers } from './matcher.ts';
+export { generateContextBrief } from './context-brief.ts';
