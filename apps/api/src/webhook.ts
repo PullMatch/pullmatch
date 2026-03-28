@@ -1,6 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, resolveGitHubToken } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -80,7 +80,6 @@ function formatReviewerComment(
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
-  const githubToken = process.env.GITHUB_TOKEN_WRITE;
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -103,10 +102,12 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       htmlUrl: pr.html_url,
     };
 
-    // Fire-and-forget: don't block webhook response on analysis
-    runAnalysisPipeline(parsed, githubToken).catch((err) => {
-      logger.error('Pipeline error', { pr: parsed.prNumber, error: err instanceof Error ? err.message : String(err) });
-    });
+    // Resolve token per-event (installation tokens are short-lived)
+    resolveGitHubToken()
+      .then((token) => runAnalysisPipeline(parsed, token))
+      .catch((err) => {
+        logger.error('Pipeline error', { pr: parsed.prNumber, error: err instanceof Error ? err.message : String(err) });
+      });
   });
 
   const router = new Hono();
