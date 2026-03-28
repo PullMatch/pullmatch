@@ -1,6 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '../../../packages/shared/src/index.ts';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {

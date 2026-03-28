@@ -1,14 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "rootDir": "../../"
+    "paths": {
+      "@pullmatch/shared": ["../../packages/shared/src"]
+    }
   },
-  "include": ["src", "../../packages/shared/src"]
+  "include": ["src"]
 }
