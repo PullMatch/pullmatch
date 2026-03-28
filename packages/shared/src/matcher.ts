@@ -33,7 +33,7 @@ export function matchReviewers(
   for (const entry of graph.values()) {
     if (entry.login === prAuthor) continue;
     const recency = recencyScore(entry.latestCommit);
-    const codeOwnerBonus = entry.isCodeOwner ? entry.codeOwnerFiles : 0;
+    const codeOwnerBonus = entry.isCodeOwner ? (entry.codeOwnerFiles ?? 0) : 0;
     const score =
       entry.exactCommits * 3 + entry.dirCommits * 1 + recency * 2 + codeOwnerBonus * 4;
     candidates.push({ entry, score });
@@ -54,7 +54,7 @@ export function matchReviewers(
       reasons.push(`${entry.dirCommits} commit(s) in the same directory/directories`);
     }
     if (entry.isCodeOwner) {
-      reasons.push(`Designated code owner for ${entry.codeOwnerFiles} changed file(s)`);
+      reasons.push(`Designated code owner for ${entry.codeOwnerFiles ?? 0} changed file(s)`);
     }
     const ageDays = Math.round(
       (Date.now() - new Date(entry.latestCommit).getTime()) / (1000 * 60 * 60 * 24)

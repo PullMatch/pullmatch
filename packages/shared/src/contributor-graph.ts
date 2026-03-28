@@ -5,6 +5,8 @@ export interface ContributorEntry {
   exactCommits: number;  // commits to exact changed files
   dirCommits: number;    // commits to directories of changed files
   latestCommit: string;  // ISO date of most recent commit
+  isCodeOwner?: boolean;       // true if user is a CODEOWNERS match
+  codeOwnerFiles?: number;     // count of changed files they own via CODEOWNERS
 }
 
 const BOT_SUFFIXES = ['[bot]', '-bot'];
