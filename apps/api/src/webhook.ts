@@ -1,6 +1,20 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, loadRepoConfig, filterIgnoredFiles, matcherOptionsFromConfig } from '@pullmatch/shared';
+import {
+  fetchPRFiles,
+  buildContributorGraph,
+  matchReviewers,
+  postPRComment,
+  requestReviewers,
+  loadRepoConfig,
+  filterIgnoredFiles,
+  matcherOptionsFromConfig,
+  parseInstallationEvent,
+  parseInstallationRepositoriesEvent,
+  formatInstallationLog,
+  trackEvent,
+  createRequestId,
+} from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -59,10 +73,24 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
     return;
   }
 
-  // 4. Format and post comment
+  // 6. Format and post comment
   const comment = formatReviewerComment(event, recommendations);
   await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
   logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+
+  // 7. Auto-request reviewers via GitHub API (opt-in)
+  if (config.reviewers.autoAssign) {
+    const topLogins = recommendations
+      .slice(0, config.reviewers.autoAssignCount)
+      .map((r) => r.login);
+
+    const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
+    logger.info('Auto-requested reviewers', {
+      pr: event.prNumber,
+      requested: result.requested,
+      failed: result.failed,
+    });
+  }
 }
 
 function formatReviewerComment(
@@ -120,9 +148,60 @@ export function createWebhookRouter(webhookSecret: string): Hono {
     });
   });
 
+  webhooks.on(['installation.created', 'installation.deleted'], ({ id, payload }) => {
+    const parsed = parseInstallationEvent(payload);
+    if (!parsed) {
+      return;
+    }
+
+    logger.info('GitHub App installation event', {
+      deliveryId: id,
+      ...formatInstallationLog(parsed),
+    });
+
+    trackEvent({
+      name: 'installation_event',
+      requestId: id,
+      properties: {
+        action: parsed.action,
+        org: parsed.org,
+        repoCount: parsed.repos.length,
+        installerLogin: parsed.installerLogin,
+        installationId: parsed.installationId,
+      },
+    });
+  });
+
+  webhooks.on(['installation_repositories.added', 'installation_repositories.removed'], ({ id, payload }) => {
+    const parsed = parseInstallationRepositoriesEvent(payload);
+    if (!parsed) {
+      return;
+    }
+
+    logger.info('GitHub App installation repositories changed', {
+      deliveryId: id,
+      ...formatInstallationLog(parsed),
+    });
+
+    trackEvent({
+      name: 'installation_event',
+      requestId: id,
+      properties: {
+        action: parsed.action,
+        org: parsed.org,
+        repoCount: parsed.repos.length,
+        installerLogin: parsed.installerLogin,
+        installationId: parsed.installationId,
+      },
+    });
+  });
+
   const router = new Hono();
 
   router.post('/webhook', async (c) => {
+    const requestId = createRequestId();
+    c.header('X-PullMatch-Request-Id', requestId);
+
     const signature = c.req.header('X-Hub-Signature-256');
     const eventName = c.req.header('X-GitHub-Event');
     const deliveryId = c.req.header('X-GitHub-Delivery') ?? 'unknown';
@@ -134,7 +213,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       return c.json({ error: 'Missing X-GitHub-Event header' }, 400);
     }
 
-    logger.info('Webhook received', { event: eventName, deliveryId });
+    logger.info('Webhook received', { event: eventName, deliveryId, requestId });
 
     const rawBody = await c.req.text();
 
@@ -148,7 +227,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.error('Webhook processing failed', { event: eventName, deliveryId, error: message });
+      logger.error('Webhook processing failed', { event: eventName, deliveryId, requestId, error: message });
       // Return 400 for signature failures, keeping 5xx for unexpected errors
       return c.json({ error: 'Webhook verification or processing failed' }, 400);
     }

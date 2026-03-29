@@ -13,6 +13,8 @@ export interface ReviewerConfig {
   count: number;
   exclude: string[];
   includeCodeowners: boolean;
+  autoAssign: boolean;
+  autoAssignCount: number;
   weights: ReviewerWeights;
 }
 
@@ -26,6 +28,8 @@ export const DEFAULT_CONFIG: RepoConfig = {
     count: 3,
     exclude: [],
     includeCodeowners: true,
+    autoAssign: false,
+    autoAssignCount: 2,
     weights: {
       codeowners: 0.4,
       recency: 0.3,
@@ -59,6 +63,8 @@ export function parseRepoConfig(raw: string): RepoConfig {
     count: validPositiveInt(rev?.count, DEFAULT_CONFIG.reviewers.count),
     exclude: validStringArray(rev?.exclude, DEFAULT_CONFIG.reviewers.exclude),
     includeCodeowners: validBool(rev?.includeCodeowners, DEFAULT_CONFIG.reviewers.includeCodeowners),
+    autoAssign: validBool(rev?.autoAssign, DEFAULT_CONFIG.reviewers.autoAssign),
+    autoAssignCount: validPositiveInt(rev?.autoAssignCount, DEFAULT_CONFIG.reviewers.autoAssignCount),
     weights: validWeights(rev?.weights as Record<string, unknown> | undefined),
   };
 
