@@ -1,117 +1,171 @@
 import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { getAppConfigFromEnv, getInstallationToken, resolveGitHubToken } from '../github-app-auth.ts';
+import { generateKeyPairSync } from 'node:crypto';
+import {
+  resolveInstallationToken,
+  clearTokenCache,
+  getTokenCacheSize,
+  type TokenResolverConfig,
+} from '../github-app-auth.ts';
 
-describe('getAppConfigFromEnv', () => {
-  const originalEnv = { ...process.env };
-
-  afterEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  it('returns config when all env vars are set', () => {
-    process.env.GITHUB_APP_ID = '12345';
-    process.env.GITHUB_APP_PRIVATE_KEY = '-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----';
-    process.env.GITHUB_APP_INSTALLATION_ID = '67890';
-
-    const config = getAppConfigFromEnv();
-    assert.ok(config);
-    assert.equal(config.appId, '12345');
-    assert.equal(config.installationId, 67890);
-    assert.ok(config.privateKey.includes('RSA'));
-  });
-
-  it('returns null when GITHUB_APP_ID is missing', () => {
-    delete process.env.GITHUB_APP_ID;
-    process.env.GITHUB_APP_PRIVATE_KEY = 'key';
-    process.env.GITHUB_APP_INSTALLATION_ID = '67890';
-
-    assert.equal(getAppConfigFromEnv(), null);
-  });
-
-  it('returns null when GITHUB_APP_PRIVATE_KEY is missing', () => {
-    process.env.GITHUB_APP_ID = '12345';
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
-    process.env.GITHUB_APP_INSTALLATION_ID = '67890';
-
-    assert.equal(getAppConfigFromEnv(), null);
-  });
-
-  it('returns null when GITHUB_APP_INSTALLATION_ID is missing', () => {
-    process.env.GITHUB_APP_ID = '12345';
-    process.env.GITHUB_APP_PRIVATE_KEY = 'key';
-    delete process.env.GITHUB_APP_INSTALLATION_ID;
-
-    assert.equal(getAppConfigFromEnv(), null);
-  });
-
-  it('returns null when all app env vars are missing', () => {
-    delete process.env.GITHUB_APP_ID;
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
-    delete process.env.GITHUB_APP_INSTALLATION_ID;
-
-    assert.equal(getAppConfigFromEnv(), null);
-  });
+// Generate a test RSA key pair once for all tests
+const { privateKey } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
 });
 
-describe('getInstallationToken', () => {
-  it('calls createAppAuth and returns token + expiresAt', async () => {
-    // We mock at the module level by testing the contract:
-    // getInstallationToken takes a config and uses @octokit/auth-app internally.
-    // Since we can't easily mock ESM imports in node:test, we verify the function
-    // signature and error behavior instead.
+const TEST_APP_ID = '12345';
+const TEST_INSTALLATION_ID = 67890;
 
-    // Passing invalid credentials should throw (proves it calls the real auth library)
+function makeConfig(overrides?: Partial<TokenResolverConfig>): TokenResolverConfig {
+  return {
+    appId: TEST_APP_ID,
+    privateKey,
+    fallbackToken: 'ghp_fallback_token',
+    ...overrides,
+  };
+}
+
+describe('resolveInstallationToken', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    clearTokenCache();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('falls back to static token when no installationId is provided', async () => {
+    const config = makeConfig();
+    const token = await resolveInstallationToken(undefined, config);
+    assert.equal(token, 'ghp_fallback_token');
+  });
+
+  it('returns undefined when no installationId and no fallback', async () => {
+    const config = makeConfig({ fallbackToken: undefined });
+    const token = await resolveInstallationToken(undefined, config);
+    assert.equal(token, undefined);
+  });
+
+  it('falls back to static token when appId is missing', async () => {
+    const config = makeConfig({ appId: '' });
+    const token = await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+    assert.equal(token, 'ghp_fallback_token');
+  });
+
+  it('fetches installation token from GitHub API', async () => {
+    const mockFetch = mock.fn(async () =>
+      new Response(JSON.stringify({ token: 'ghs_installation_token_abc' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const config = makeConfig();
+    const token = await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+
+    assert.equal(token, 'ghs_installation_token_abc');
+    assert.equal(mockFetch.mock.callCount(), 1);
+
+    // Verify the request was made to the correct endpoint
+    const call = mockFetch.mock.calls[0] as unknown as { arguments: [string, RequestInit] };
+    assert.equal(call.arguments[0], `https://api.github.com/app/installations/${TEST_INSTALLATION_ID}/access_tokens`);
+    assert.equal(call.arguments[1].method, 'POST');
+
+    // Verify JWT was sent in Authorization header
+    const authHeader = (call.arguments[1].headers as Record<string, string>)['Authorization'];
+    assert.ok(authHeader?.startsWith('Bearer '), 'Should have Bearer token');
+    const jwt = authHeader.split(' ')[1];
+    const parts = jwt.split('.');
+    assert.equal(parts.length, 3, 'JWT should have 3 parts');
+  });
+
+  it('caches installation tokens and reuses them', async () => {
+    const mockFetch = mock.fn(async () =>
+      new Response(JSON.stringify({ token: 'ghs_cached_token' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const config = makeConfig();
+
+    // First call fetches from API
+    const token1 = await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+    assert.equal(token1, 'ghs_cached_token');
+    assert.equal(mockFetch.mock.callCount(), 1);
+    assert.equal(getTokenCacheSize(), 1);
+
+    // Second call should use cache
+    const token2 = await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+    assert.equal(token2, 'ghs_cached_token');
+    assert.equal(mockFetch.mock.callCount(), 1, 'Should not make a second API call');
+  });
+
+  it('caches tokens per installation ID', async () => {
+    let callCount = 0;
+    const mockFetch = mock.fn(async () => {
+      callCount++;
+      return new Response(JSON.stringify({ token: `ghs_token_${callCount}` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const config = makeConfig();
+
+    const token1 = await resolveInstallationToken(11111, config);
+    const token2 = await resolveInstallationToken(22222, config);
+
+    assert.equal(token1, 'ghs_token_1');
+    assert.equal(token2, 'ghs_token_2');
+    assert.equal(mockFetch.mock.callCount(), 2);
+    assert.equal(getTokenCacheSize(), 2);
+  });
+
+  it('throws on GitHub API error', async () => {
+    const mockFetch = mock.fn(async () =>
+      new Response('Bad credentials', { status: 401 })
+    );
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const config = makeConfig();
+
     await assert.rejects(
-      () =>
-        getInstallationToken({
-          appId: 'invalid',
-          privateKey: 'not-a-real-key',
-          installationId: 0,
-        }),
+      () => resolveInstallationToken(TEST_INSTALLATION_ID, config),
       (err: Error) => {
-        // @octokit/auth-app will throw about the invalid key
-        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('401'));
+        assert.ok(err.message.includes(String(TEST_INSTALLATION_ID)));
         return true;
       }
     );
   });
-});
 
-describe('resolveGitHubToken', () => {
-  const originalEnv = { ...process.env };
+  it('clearTokenCache empties the cache', async () => {
+    const mockFetch = mock.fn(async () =>
+      new Response(JSON.stringify({ token: 'ghs_will_be_cleared' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
 
-  afterEach(() => {
-    process.env = { ...originalEnv };
-  });
+    const config = makeConfig();
+    await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+    assert.equal(getTokenCacheSize(), 1);
 
-  it('falls back to GITHUB_TOKEN_WRITE when no app config', async () => {
-    delete process.env.GITHUB_APP_ID;
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
-    delete process.env.GITHUB_APP_INSTALLATION_ID;
-    process.env.GITHUB_TOKEN_WRITE = 'ghp_test_token_123';
+    clearTokenCache();
+    assert.equal(getTokenCacheSize(), 0);
 
-    const token = await resolveGitHubToken();
-    assert.equal(token, 'ghp_test_token_123');
-  });
-
-  it('returns undefined when no auth method is configured', async () => {
-    delete process.env.GITHUB_APP_ID;
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
-    delete process.env.GITHUB_APP_INSTALLATION_ID;
-    delete process.env.GITHUB_TOKEN_WRITE;
-
-    const token = await resolveGitHubToken();
-    assert.equal(token, undefined);
-  });
-
-  it('falls back to GITHUB_TOKEN_WRITE when app auth fails', async () => {
-    process.env.GITHUB_APP_ID = '12345';
-    process.env.GITHUB_APP_PRIVATE_KEY = 'bad-key';
-    process.env.GITHUB_APP_INSTALLATION_ID = '67890';
-    process.env.GITHUB_TOKEN_WRITE = 'ghp_fallback_token';
-
-    const token = await resolveGitHubToken();
-    assert.equal(token, 'ghp_fallback_token');
+    // Next call should fetch again
+    await resolveInstallationToken(TEST_INSTALLATION_ID, config);
+    assert.equal(mockFetch.mock.callCount(), 2);
   });
 });

@@ -16,9 +16,9 @@ import {
   createRequestId,
   GitHubRateLimitError,
   generateContextBrief,
-  resolveGitHubToken,
+  resolveInstallationToken,
 } from '@pullmatch/shared';
-import type { ContextBrief } from '@pullmatch/shared';
+import type { ContextBrief, TokenResolverConfig } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -35,13 +35,15 @@ export interface ParsedPREvent {
   sha: string;
   diffUrl: string;
   htmlUrl: string;
+  installationId?: number;
 }
 
-async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | undefined): Promise<void> {
+async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResolverConfig): Promise<void> {
   logger.info('Starting analysis pipeline', { pr: event.prNumber, repo: event.repo });
 
+  const githubToken = await resolveInstallationToken(event.installationId, tokenConfig);
   if (!githubToken) {
-    logger.warn('GITHUB_TOKEN not set — skipping reviewer analysis');
+    logger.warn('No GitHub token available — skipping reviewer analysis');
     return;
   }
 
@@ -92,7 +94,7 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
   await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
   logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
 
-  // 7. Auto-request reviewers via GitHub API (opt-in)
+  // 8. Auto-request reviewers via GitHub API (opt-in)
   if (config.reviewers.autoAssign) {
     const topLogins = recommendations
       .slice(0, config.reviewers.autoAssignCount)
@@ -138,6 +140,11 @@ function formatReviewerComment(
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
+  const tokenConfig: TokenResolverConfig = {
+    appId: process.env.GITHUB_APP_ID ?? '',
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
+    fallbackToken: process.env.GITHUB_TOKEN_WRITE,
+  };
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -158,29 +165,30 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       sha: pr.head.sha,
       diffUrl: pr.diff_url,
       htmlUrl: pr.html_url,
+      installationId: (payload as Record<string, unknown>).installation
+        ? ((payload as Record<string, unknown>).installation as { id: number }).id
+        : undefined,
     };
 
-    // Resolve token per-event (installation tokens are short-lived)
-    resolveGitHubToken()
-      .then((token) => runAnalysisPipeline(parsed, token))
-      .catch(async (err) => {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
+    // Resolve token per-event (installation tokens are short-lived and per-org)
+    runAnalysisPipeline(parsed, tokenConfig).catch(async (err) => {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
 
-        // Post an error comment on the PR so the user knows what happened
-        try {
-          const token = await resolveGitHubToken().catch(() => undefined);
-          if (token) {
-            const isRateLimit = err instanceof GitHubRateLimitError;
-            const errorComment = isRateLimit
-              ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
-              : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
-            await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
-          }
-        } catch (commentErr) {
-          logger.error('Failed to post error comment', { pr: parsed.prNumber, error: commentErr instanceof Error ? commentErr.message : String(commentErr) });
+      // Post an error comment on the PR so the user knows what happened
+      try {
+        const token = await resolveInstallationToken(parsed.installationId, tokenConfig).catch(() => undefined);
+        if (token) {
+          const isRateLimit = err instanceof GitHubRateLimitError;
+          const errorComment = isRateLimit
+            ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
+            : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
+          await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
         }
-      });
+      } catch (commentErr) {
+        logger.error('Failed to post error comment', { pr: parsed.prNumber, error: commentErr instanceof Error ? commentErr.message : String(commentErr) });
+      }
+    });
   });
 
   webhooks.on(['installation.created', 'installation.deleted'], ({ id, payload }) => {
