@@ -150,3 +150,48 @@ export async function fetchRecentCommitters(
       date: c.commit.author.date,
     }));
 }
+
+export interface RequestReviewersResult {
+  requested: string[];
+  failed: string[];
+}
+
+export async function requestReviewers(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  logins: string[],
+  token: string
+): Promise<RequestReviewersResult> {
+  if (logins.length === 0) return { requested: [], failed: [] };
+
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/requested_reviewers`;
+  console.debug(`[github] POST ${url} reviewers=${logins.join(',')}`);
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewers: logins }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 422) {
+      console.warn(`[github] Some reviewers could not be requested (422): ${body}`);
+      return { requested: [], failed: logins };
+    }
+    throw new Error(`GitHub API error ${res.status} requesting reviewers: ${body}`);
+  }
+
+  const data = await res.json() as { requested_reviewers?: Array<{ login: string }> };
+  const actuallyRequested = (data.requested_reviewers ?? []).map((r) => r.login);
+
+  const requested = logins.filter((l) => actuallyRequested.includes(l));
+  const failed = logins.filter((l) => !actuallyRequested.includes(l));
+
+  if (failed.length > 0) {
+    console.warn(`[github] Some reviewers not in requested list: ${failed.join(', ')}`);
+  }
+
+  return { requested, failed };
+}

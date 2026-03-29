@@ -32,6 +32,31 @@ function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened') {
   };
 }
 
+function makeInstallationPayload(action: 'created' | 'deleted' = 'created') {
+  return {
+    action,
+    installation: {
+      id: 1001,
+      account: { login: 'acme' },
+    },
+    sender: { login: 'installer-user' },
+    repositories: [{ full_name: 'acme/pullmatch' }],
+  };
+}
+
+function makeInstallationRepositoriesPayload(action: 'added' | 'removed' = 'added') {
+  return {
+    action,
+    installation: {
+      id: 1001,
+      account: { login: 'acme' },
+    },
+    sender: { login: 'installer-user' },
+    repositories_added: action === 'added' ? [{ full_name: 'acme/new-repo' }] : [],
+    repositories_removed: action === 'removed' ? [{ full_name: 'acme/old-repo' }] : [],
+  };
+}
+
 async function signPayload(secret: string, payload: string): Promise<string> {
   const signer = new Webhooks({ secret });
   return signer.sign(payload);
@@ -99,6 +124,7 @@ describe('createWebhookRouter', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
     assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
   });
 
   it('handles invalid signatures as a 400 response', async () => {
@@ -164,5 +190,44 @@ describe('createWebhookRouter', () => {
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
     assert.ok(commentBody!.includes('_Powered by [PullMatch](https://github.com/pullmatch)_'));
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('handles installation.created without running analysis fetches', async () => {
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls.push(String(input));
+      return new Response('unexpected call', { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation',
+      payload: JSON.stringify(makeInstallationPayload('created')),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('handles installation_repositories.added without running analysis fetches', async () => {
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls.push(String(input));
+      return new Response('unexpected call', { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation_repositories',
+      payload: JSON.stringify(makeInstallationRepositoriesPayload('added')),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
   });
 });
