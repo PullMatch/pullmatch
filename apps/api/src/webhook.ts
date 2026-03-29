@@ -1,6 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, GitHubRateLimitError, generateContextBrief } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, GitHubRateLimitError, generateContextBrief, resolveGitHubToken } from '@pullmatch/shared';
 import type { ContextBrief } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
@@ -96,7 +96,6 @@ function formatReviewerComment(
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
-  const githubToken = process.env.GITHUB_TOKEN_WRITE;
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -119,24 +118,27 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       htmlUrl: pr.html_url,
     };
 
-    // Fire-and-forget: don't block webhook response on analysis
-    runAnalysisPipeline(parsed, githubToken).catch(async (err) => {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
+    // Resolve token per-event (installation tokens are short-lived)
+    resolveGitHubToken()
+      .then((token) => runAnalysisPipeline(parsed, token))
+      .catch(async (err) => {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
 
-      // Post an error comment on the PR so the user knows what happened
-      if (githubToken) {
-        const isRateLimit = err instanceof GitHubRateLimitError;
-        const errorComment = isRateLimit
-          ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
-          : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
+        // Post an error comment on the PR so the user knows what happened
         try {
-          await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, githubToken);
+          const token = await resolveGitHubToken().catch(() => undefined);
+          if (token) {
+            const isRateLimit = err instanceof GitHubRateLimitError;
+            const errorComment = isRateLimit
+              ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
+              : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
+            await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
+          }
         } catch (commentErr) {
           logger.error('Failed to post error comment', { pr: parsed.prNumber, error: commentErr instanceof Error ? commentErr.message : String(commentErr) });
         }
-      }
-    });
+      });
   });
 
   const router = new Hono();

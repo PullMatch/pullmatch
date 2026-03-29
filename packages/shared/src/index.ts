@@ -28,3 +28,5 @@ export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers } from './matcher.ts';
 export { generateContextBrief } from './context-brief.ts';
+export { getInstallationToken, getAppConfigFromEnv, resolveGitHubToken } from './github-app-auth.ts';
+export type { GitHubAppConfig, InstallationToken } from './github-app-auth.ts';

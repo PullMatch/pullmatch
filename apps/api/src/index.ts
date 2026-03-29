@@ -4,11 +4,23 @@ import { createWebhookRouter } from './webhook.ts';
 import { logger } from './logger.ts';
 
 // --- Environment validation ---
-const required = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN_WRITE'] as const;
+const required = ['GITHUB_WEBHOOK_SECRET'] as const;
 const missing = required.filter((key) => !process.env[key]);
 
 if (missing.length > 0) {
   logger.error('Missing required environment variables', { missing });
+  process.exit(1);
+}
+
+// Validate that at least one auth method is configured
+const hasAppAuth =
+  process.env.GITHUB_APP_ID &&
+  process.env.GITHUB_APP_PRIVATE_KEY &&
+  process.env.GITHUB_APP_INSTALLATION_ID;
+const hasTokenAuth = !!process.env.GITHUB_TOKEN_WRITE;
+
+if (!hasAppAuth && !hasTokenAuth) {
+  logger.error('No GitHub auth configured. Set either GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY + GITHUB_APP_INSTALLATION_ID, or GITHUB_TOKEN_WRITE');
   process.exit(1);
 }
 
@@ -18,9 +30,9 @@ const port = Number(process.env.PORT) || 3000;
 // --- Startup log ---
 logger.info('Starting PullMatch API', {
   port,
-  webhookSecretSet: true,
-  githubTokenWriteSet: true,
+  authMethod: hasAppAuth ? 'github-app' : 'token',
   githubAppId: process.env.GITHUB_APP_ID ? 'set' : 'unset',
+  githubTokenWriteSet: hasTokenAuth,
   version: process.env.npm_package_version ?? '0.0.1',
 });
 
