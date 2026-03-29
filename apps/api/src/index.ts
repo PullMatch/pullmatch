@@ -4,11 +4,18 @@ import { createWebhookRouter } from './webhook.ts';
 import { logger } from './logger.ts';
 
 // --- Environment validation ---
-const required = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN_WRITE'] as const;
-const missing = required.filter((key) => !process.env[key]);
+// GITHUB_WEBHOOK_SECRET is always required.
+// Auth: either GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY (multi-org) or GITHUB_TOKEN_WRITE (single-org fallback).
+if (!process.env.GITHUB_WEBHOOK_SECRET) {
+  logger.error('Missing required environment variable: GITHUB_WEBHOOK_SECRET');
+  process.exit(1);
+}
 
-if (missing.length > 0) {
-  logger.error('Missing required environment variables', { missing });
+const hasAppAuth = !!(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY);
+const hasFallbackToken = !!process.env.GITHUB_TOKEN_WRITE;
+
+if (!hasAppAuth && !hasFallbackToken) {
+  logger.error('No GitHub auth configured. Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY for multi-org, or GITHUB_TOKEN_WRITE as fallback.');
   process.exit(1);
 }
 
@@ -18,9 +25,9 @@ const port = Number(process.env.PORT) || 3000;
 // --- Startup log ---
 logger.info('Starting PullMatch API', {
   port,
-  webhookSecretSet: true,
-  githubTokenWriteSet: true,
+  authMode: hasAppAuth ? 'github-app' : 'token-fallback',
   githubAppId: process.env.GITHUB_APP_ID ? 'set' : 'unset',
+  githubTokenWriteSet: hasFallbackToken,
   version: process.env.npm_package_version ?? '0.0.1',
 });
 
