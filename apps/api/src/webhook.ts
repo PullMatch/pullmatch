@@ -1,6 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, loadRepoConfig, filterIgnoredFiles, matcherOptionsFromConfig } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -27,21 +27,32 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
     return;
   }
 
-  // 1. Fetch changed files
+  // 1. Load repo config (.pullmatch.yml)
+  const config = await loadRepoConfig(event.owner, event.repoName, githubToken);
+  logger.info('Repo config loaded', { pr: event.prNumber, ignore: config.ignore.length, reviewerCount: config.reviewers.count });
+
+  // 2. Fetch changed files
   const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
   if (prFiles.length === 0) {
     logger.info('No files changed — skipping', { pr: event.prNumber });
     return;
   }
 
-  const filenames = prFiles.map((f) => f.filename);
-  logger.info('Files changed', { pr: event.prNumber, count: filenames.length });
+  // 3. Filter out ignored files
+  const allFilenames = prFiles.map((f) => f.filename);
+  const filenames = filterIgnoredFiles(allFilenames, config.ignore);
+  logger.info('Files changed', { pr: event.prNumber, total: allFilenames.length, afterFilter: filenames.length });
 
-  // 2. Build contributor graph from commit history for changed files
+  if (filenames.length === 0) {
+    logger.info('All files matched ignore patterns — skipping', { pr: event.prNumber });
+    return;
+  }
+
+  // 4. Build contributor graph from commit history for changed files
   const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
 
-  // 3. Match top reviewers (excluding PR author)
-  const recommendations = matchReviewers(graph, event.author);
+  // 5. Match top reviewers (excluding PR author, applying config)
+  const recommendations = matchReviewers(graph, event.author, matcherOptionsFromConfig(config.reviewers));
 
   if (recommendations.length === 0) {
     logger.info('No reviewer candidates found', { pr: event.prNumber });

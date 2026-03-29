@@ -26,4 +26,7 @@ export { fetchPRFiles, fetchRecentCommitters, postPRComment } from './github.ts'
 export type { PRFile, Committer } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
-export { matchReviewers } from './matcher.ts';
+export { matchReviewers, matcherOptionsFromConfig } from './matcher.ts';
+export type { MatcherOptions } from './matcher.ts';
+export { loadRepoConfig, parseRepoConfig, filterIgnoredFiles, DEFAULT_CONFIG } from './config.ts';
+export type { RepoConfig, ReviewerConfig, ReviewerWeights } from './config.ts';
