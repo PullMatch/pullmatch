@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@pullmatch/shared": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "@octokit/webhooks": "^14.2.0",
     "hono": "^4.7.0"

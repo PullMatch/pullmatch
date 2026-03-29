@@ -16,6 +16,9 @@ importers:
       '@octokit/webhooks':
         specifier: ^14.2.0
         version: 14.2.0
+      '@pullmatch/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       hono:
         specifier: ^4.7.0
         version: 4.12.9

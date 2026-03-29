@@ -1,6 +1,7 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '../../../packages/shared/src/index.ts';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { resolveInstallationToken, type TokenResolverConfig } from '@pullmatch/shared/src/github-app-auth.ts';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -17,13 +18,15 @@ export interface ParsedPREvent {
   sha: string;
   diffUrl: string;
   htmlUrl: string;
+  installationId?: number;
 }
 
-async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | undefined): Promise<void> {
+async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResolverConfig): Promise<void> {
   logger.info('Starting analysis pipeline', { pr: event.prNumber, repo: event.repo });
 
+  const githubToken = await resolveInstallationToken(event.installationId, tokenConfig);
   if (!githubToken) {
-    logger.warn('GITHUB_TOKEN not set — skipping reviewer analysis');
+    logger.warn('No GitHub token available — skipping reviewer analysis');
     return;
   }
 
@@ -80,7 +83,11 @@ function formatReviewerComment(
 }
 
 export function createWebhookRouter(webhookSecret: string): Hono {
-  const githubToken = process.env.GITHUB_TOKEN_WRITE;
+  const tokenConfig: TokenResolverConfig = {
+    appId: process.env.GITHUB_APP_ID ?? '',
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
+    fallbackToken: process.env.GITHUB_TOKEN_WRITE,
+  };
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -101,10 +108,13 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       sha: pr.head.sha,
       diffUrl: pr.diff_url,
       htmlUrl: pr.html_url,
+      installationId: (payload as Record<string, unknown>).installation
+        ? ((payload as Record<string, unknown>).installation as { id: number }).id
+        : undefined,
     };
 
     // Fire-and-forget: don't block webhook response on analysis
-    runAnalysisPipeline(parsed, githubToken).catch((err) => {
+    runAnalysisPipeline(parsed, tokenConfig).catch((err) => {
       logger.error('Pipeline error', { pr: parsed.prNumber, error: err instanceof Error ? err.message : String(err) });
     });
   });
