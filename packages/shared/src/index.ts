@@ -22,7 +22,7 @@ export interface ContextBrief {
   focusAreas: string[];
 }
 
-export { fetchPRFiles, fetchRecentCommitters, postPRComment } from './github.ts';
+export { fetchPRFiles, fetchRecentCommitters, postPRComment, findExistingComment, updatePRComment, PULLMATCH_MARKER } from './github.ts';
 export type { PRFile, Committer } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';

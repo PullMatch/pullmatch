@@ -1,6 +1,6 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, findExistingComment, updatePRComment, PULLMATCH_MARKER } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -48,10 +48,17 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
     return;
   }
 
-  // 4. Format and post comment
+  // 4. Format comment and create or update
   const comment = formatReviewerComment(event, recommendations);
-  await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
-  logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
+
+  if (existingCommentId) {
+    await updatePRComment(event.owner, event.repoName, existingCommentId, comment, githubToken);
+    logger.info('Updated reviewer suggestions', { pr: event.prNumber, repo: event.repo, commentId: existingCommentId });
+  } else {
+    await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+    logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  }
 }
 
 function formatReviewerComment(
@@ -59,6 +66,7 @@ function formatReviewerComment(
   recommendations: Array<{ login: string; score: number; reasons: string[] }>
 ): string {
   const lines: string[] = [
+    PULLMATCH_MARKER,
     '## PullMatch Reviewer Suggestions',
     '',
     `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
