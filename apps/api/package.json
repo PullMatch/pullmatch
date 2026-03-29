@@ -8,7 +8,8 @@
     "dev": "node --env-file=.env --experimental-strip-types --watch src/index.ts",
     "start": "node --env-file=.env --experimental-strip-types src/index.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@pullmatch/shared": "workspace:*",
