@@ -21,6 +21,8 @@ function recencyScore(latestCommit: string): number {
  * - recency (2x on [0,1]): recent contributors are more likely to be available and up-to-date
  * - codeOwnerBonus (4x): designated CODEOWNERS get the strongest boost
  *
+ * - codeOwnerBonus (4x): designated CODEOWNERS get the strongest boost
+ *
  * Tie-breaking: alphabetical by login (stable, deterministic).
  */
 export function matchReviewers(
