@@ -140,6 +140,9 @@ describe('webhook integration pipeline', () => {
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
         ]);
       }
+      if (url.includes('/issues/42/comments') && (!init?.method || init?.method === 'GET')) {
+        return Response.json([]);
+      }
       if (url.includes('/issues/42/comments') && init?.method === 'POST') {
         const parsed = JSON.parse(String(init.body)) as { body: string };
         commentBody = parsed.body;
@@ -208,6 +211,9 @@ describe('webhook integration pipeline', () => {
         return Response.json([
           { author: { login: 'carol' }, commit: { author: { date: '2026-03-26T00:00:00.000Z' } } },
         ]);
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init?.method === 'GET')) {
+        return Response.json([]);
       }
       if (url.includes('/issues/42/comments') && init?.method === 'POST') {
         postedComment = (JSON.parse(String(init.body)) as { body: string }).body;

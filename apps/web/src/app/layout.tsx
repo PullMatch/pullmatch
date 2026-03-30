@@ -21,7 +21,31 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <div className="siteShell">
+          <header className="siteHeader">
+            <div className="siteInner">
+              <a href="/" className="siteLogo">
+                PullMatch
+              </a>
+              <nav aria-label="Main navigation">
+                <ul className="siteNavLinks">
+                  <li>
+                    <a href="/">Home</a>
+                  </li>
+                  <li>
+                    <a href="/dashboard">Dashboard</a>
+                  </li>
+                  <li>
+                    <a href="https://github.com/PullMatch/pullmatch">GitHub</a>
+                  </li>
+                </ul>
+              </nav>
+            </div>
+          </header>
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

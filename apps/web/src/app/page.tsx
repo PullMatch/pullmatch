@@ -3,24 +3,6 @@ import styles from "./page.module.css";
 export default function Home() {
   return (
     <main className={styles.container}>
-      {/* ── Nav ── */}
-      <nav className={styles.nav}>
-        <a href="/" className={styles.logo}>
-          PullMatch
-        </a>
-        <ul className={styles.navLinks}>
-          <li>
-            <a href="#how-it-works">How it works</a>
-          </li>
-          <li>
-            <a href="#features">Features</a>
-          </li>
-          <li>
-            <a href="https://github.com/PullMatch/pullmatch">GitHub</a>
-          </li>
-        </ul>
-      </nav>
-
       {/* ── Hero ── */}
       <section className={styles.hero}>
         <h1>Smart reviewer suggestions for every pull request</h1>

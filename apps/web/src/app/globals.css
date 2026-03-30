@@ -53,6 +53,52 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.siteShell {
+  min-height: 100vh;
+}
+
+.siteHeader {
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--bg-subtle), transparent 30%);
+}
+
+.siteInner {
+  width: min(1040px, calc(100% - 2.5rem));
+  margin: 0 auto;
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.siteLogo {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.siteNavLinks {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  list-style: none;
+}
+
+.siteNavLinks a {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.siteNavLinks a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;
@@ -60,4 +106,14 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .siteInner {
+    width: calc(100% - 1.5rem);
+  }
+
+  .siteHeader {
+    position: static;
+  }
 }
