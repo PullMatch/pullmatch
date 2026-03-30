@@ -17,6 +17,9 @@ import {
   GitHubRateLimitError,
   generateContextBrief,
   resolveInstallationToken,
+  findExistingComment,
+  updatePRComment,
+  PULLMATCH_MARKER,
 } from '@pullmatch/shared';
 import type { ContextBrief, TokenResolverConfig } from '@pullmatch/shared';
 import { logger } from './logger.ts';
@@ -89,10 +92,17 @@ async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResol
     ));
   }
 
-  // 7. Format and post comment
+  // 7. Format comment and create or update (dedup on synchronize)
   const comment = formatReviewerComment(event, recommendations, briefs);
-  await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
-  logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
+
+  if (existingCommentId) {
+    await updatePRComment(event.owner, event.repoName, existingCommentId, comment, githubToken);
+    logger.info('Updated reviewer suggestions', { pr: event.prNumber, repo: event.repo, commentId: existingCommentId });
+  } else {
+    await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+    logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  }
 
   // 8. Auto-request reviewers via GitHub API (opt-in)
   if (config.reviewers.autoAssign) {
@@ -115,6 +125,7 @@ function formatReviewerComment(
   briefs: Map<string, ContextBrief>
 ): string {
   const lines: string[] = [
+    PULLMATCH_MARKER,
     '## PullMatch Reviewer Suggestions',
     '',
     `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,

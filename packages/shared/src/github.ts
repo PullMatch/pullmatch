@@ -106,6 +106,9 @@ export async function fetchPRFiles(
   return data.map((f) => ({ filename: f.filename, status: f.status }));
 }
 
+/** HTML marker injected into PullMatch comments for dedup */
+export const PULLMATCH_MARKER = '<!-- pullmatch-reviewer-suggestions -->';
+
 export async function postPRComment(
   owner: string,
   repo: string,
@@ -121,6 +124,44 @@ export async function postPRComment(
   });
   if (!res.ok) {
     throw new Error(`GitHub API error ${res.status} posting comment: ${await res.text()}`);
+  }
+}
+
+export async function findExistingComment(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token: string
+): Promise<number | null> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
+  const res = await fetch(url, { headers: headers(token) });
+  if (!res.ok) {
+    throw new Error(`GitHub API error ${res.status} listing comments: ${await res.text()}`);
+  }
+  const comments = await res.json() as Array<{ id: number; body?: string }>;
+  for (const c of comments) {
+    if (c.body?.includes(PULLMATCH_MARKER)) {
+      return c.id;
+    }
+  }
+  return null;
+}
+
+export async function updatePRComment(
+  owner: string,
+  repo: string,
+  commentId: number,
+  body: string,
+  token: string
+): Promise<void> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API error ${res.status} updating comment: ${await res.text()}`);
   }
 }
 
