@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { StatsCollector } from '@pullmatch/shared';
 import { createWebhookRouter } from './webhook.ts';
 import { logger } from './logger.ts';
 
@@ -33,12 +34,16 @@ logger.info('Starting PullMatch API', {
 
 // --- App setup ---
 const app = new Hono();
+const statsCollector = new StatsCollector(20);
 
 app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-const webhookRouter = createWebhookRouter(webhookSecret);
+app.get('/api/stats', (c) => c.json(statsCollector.getStats()));
+app.get('/api/recent', (c) => c.json(statsCollector.getRecent()));
+
+const webhookRouter = createWebhookRouter(webhookSecret, statsCollector);
 app.route('/', webhookRouter);
 
 serve({ fetch: app.fetch, port }, () => {
