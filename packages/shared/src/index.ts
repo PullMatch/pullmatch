@@ -27,3 +27,5 @@ export type { PRFile, Committer } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers } from './matcher.ts';
+export { classifyFile, buildExpertiseMap, formatExpertiseTag } from './expertise.ts';
+export type { ExpertiseMap, ExpertiseDomain } from './expertise.ts';

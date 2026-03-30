@@ -1,6 +1,7 @@
 import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
-import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment } from '@pullmatch/shared';
+import { fetchPRFiles, buildContributorGraph, matchReviewers, postPRComment, buildExpertiseMap, formatExpertiseTag } from '@pullmatch/shared';
+import type { ExpertiseMap } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -48,15 +49,19 @@ async function runAnalysisPipeline(event: ParsedPREvent, githubToken: string | u
     return;
   }
 
-  // 4. Format and post comment
-  const comment = formatReviewerComment(event, recommendations);
+  // 4. Build expertise map from contributor graph
+  const expertiseMap = buildExpertiseMap(graph, filenames);
+
+  // 5. Format and post comment
+  const comment = formatReviewerComment(event, recommendations, expertiseMap);
   await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
   logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
 }
 
 function formatReviewerComment(
   event: ParsedPREvent,
-  recommendations: Array<{ login: string; score: number; reasons: string[] }>
+  recommendations: Array<{ login: string; score: number; reasons: string[] }>,
+  expertiseMap?: ExpertiseMap
 ): string {
   const lines: string[] = [
     '## PullMatch Reviewer Suggestions',
@@ -66,7 +71,11 @@ function formatReviewerComment(
   ];
 
   for (const rec of recommendations) {
-    lines.push(`### @${rec.login} (score: ${rec.score})`);
+    const expertiseTag = expertiseMap ? formatExpertiseTag(rec.login, expertiseMap) : undefined;
+    const header = expertiseTag
+      ? `### @${rec.login} (score: ${rec.score}) — ${expertiseTag}`
+      : `### @${rec.login} (score: ${rec.score})`;
+    lines.push(header);
     for (const reason of rec.reasons) {
       lines.push(`- ${reason}`);
     }
