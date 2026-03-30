@@ -1,0 +1,46 @@
+name: Auto PR
+
+on:
+  push:
+    branches:
+      - 'pul-*'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  create-pr:
+    name: Create PR if none exists
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          EXISTING=$(gh pr list --head "$BRANCH" --json number --jq 'length')
+
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR already exists for $BRANCH, skipping."
+            exit 0
+          fi
+
+          COMMITS=$(git log origin/main..HEAD --pretty=format:"- %s" | head -20)
+
+          gh pr create \
+            --title "$BRANCH" \
+            --body "$(cat <<EOF
+          ## Auto-generated PR for \`$BRANCH\`
+
+          ### Commits
+          $COMMITS
+          EOF
+          )" \
+            --base main \
+            --head "$BRANCH"

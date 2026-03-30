@@ -1,0 +1,20 @@
+name: PullMatch
+slug: pullmatch
+short_description: Deterministic reviewer suggestions for GitHub pull requests.
+long_description: |
+  PullMatch analyzes pull request file changes and repository commit history to suggest
+  the best reviewers for each PR. It ranks candidates using deterministic signals:
+  exact-file commits, directory-level familiarity, recency, and CODEOWNERS weighting.
+
+  PullMatch comments directly on pull requests so teams can move faster with less
+  manual reviewer routing.
+categories:
+  - Code review
+  - Developer tools
+screenshots:
+  - caption: Pull request reviewer suggestions comment
+    path: marketplace/screenshots/reviewer-suggestions.png
+  - caption: Reviewer scoring breakdown
+    path: marketplace/screenshots/scoring-breakdown.png
+support_url: https://github.com/PullMatch/pullmatch/issues
+homepage_url: https://github.com/PullMatch/pullmatch

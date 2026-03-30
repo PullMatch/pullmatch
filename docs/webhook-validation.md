@@ -13,7 +13,10 @@ This file was created as a test PR to validate the PullMatch GitHub App webhook 
 
 - **Push event**: received and verified ✓ (delivery `532c8ae0`)
 - **Installation event**: received ✓ (delivery `650376a0`)
-- **Pull request event**: pending — this commit triggers synchronize
+- **Pull request event**: received ✓ (deliveries `d0876b70`, `df8660e0`, `e4f2c690`)
+- **Analysis pipeline**: triggers correctly ✓ (PR #8)
+- **Production API**: live at `https://pullmatch-api-prod.fly.dev` ✓
+- **Full pipeline test**: production secret aligned, triggering final synchronize
 
 ## Expected Flow
 

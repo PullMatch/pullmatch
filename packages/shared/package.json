@@ -11,7 +11,12 @@
     "test": "node --experimental-strip-types --test src/__tests__/*.test.ts"
   },
   "devDependencies": {
+    "@types/minimatch": "^6.0.0",
     "@types/node": "^22.19.15",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "minimatch": "^10.2.4",
+    "yaml": "^2.8.3"
   }
 }

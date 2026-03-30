@@ -1,0 +1,25 @@
+currency: USD
+plans:
+  - id: free
+    name: Free
+    price_monthly: 0
+    description: Public-repository reviewer suggestions for small teams.
+    limits:
+      repositories: public_only
+      suggestions_per_pull_request: 3
+    features:
+      - Ranked reviewer suggestions based on commit history
+      - PR comment output with scoring reasons
+
+  - id: pro
+    name: Pro
+    price_monthly: 9
+    description: Advanced reviewer routing for private repos and larger teams.
+    limits:
+      repositories: public_and_private
+      suggestions_per_pull_request: unlimited
+    features:
+      - Private repository support
+      - Auto-assign reviewer workflow
+      - Custom PullMatch configuration
+      - Priority support
