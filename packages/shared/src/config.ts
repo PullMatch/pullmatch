@@ -16,6 +16,8 @@ export interface ReviewerConfig {
   autoAssign: boolean;
   autoAssignCount: number;
   weights: ReviewerWeights;
+  loadBalancing: boolean;
+  maxOpenReviews: number;
 }
 
 export interface RepoConfig {
@@ -35,6 +37,8 @@ export const DEFAULT_CONFIG: RepoConfig = {
       recency: 0.3,
       frequency: 0.3,
     },
+    loadBalancing: false,
+    maxOpenReviews: 5,
   },
   ignore: [],
 };
@@ -66,6 +70,8 @@ export function parseRepoConfig(raw: string): RepoConfig {
     autoAssign: validBool(rev?.autoAssign, DEFAULT_CONFIG.reviewers.autoAssign),
     autoAssignCount: validPositiveInt(rev?.autoAssignCount, DEFAULT_CONFIG.reviewers.autoAssignCount),
     weights: validWeights(rev?.weights as Record<string, unknown> | undefined),
+    loadBalancing: validBool(rev?.loadBalancing, DEFAULT_CONFIG.reviewers.loadBalancing),
+    maxOpenReviews: validPositiveInt(rev?.maxOpenReviews, DEFAULT_CONFIG.reviewers.maxOpenReviews),
   };
 
   const ignore = validStringArray(doc.ignore, DEFAULT_CONFIG.ignore);

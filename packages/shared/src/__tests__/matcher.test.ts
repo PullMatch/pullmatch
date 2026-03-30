@@ -104,4 +104,86 @@ describe('matchReviewers', () => {
     const results = matchReviewers(graph, 'bob');
     assert.ok(results[0].reasons.some((r) => r.includes('3 changed file(s)')));
   });
+
+  it('penalizes overloaded reviewers when load balancing is enabled', () => {
+    const graph = makeGraph([
+      entry({ login: 'busy', exactCommits: 5, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'free', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+    const loadData = new Map([['busy', 5]]);
+    const results = matchReviewers(graph, 'other', {
+      topN: 2,
+      loadBalancing: true,
+      maxOpenReviews: 5,
+      reviewLoadData: loadData,
+    });
+    // Without load balancing, busy (5 commits) would beat free (3 commits).
+    // With 5 open reviews at max 5, busy gets 0.2x multiplier → should lose.
+    assert.equal(results[0].login, 'free');
+    assert.equal(results[1].login, 'busy');
+  });
+
+  it('does not penalize when load balancing is disabled', () => {
+    const graph = makeGraph([
+      entry({ login: 'busy', exactCommits: 5, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'free', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+    const loadData = new Map([['busy', 5]]);
+    const results = matchReviewers(graph, 'other', {
+      topN: 2,
+      loadBalancing: false,
+      reviewLoadData: loadData,
+    });
+    assert.equal(results[0].login, 'busy');
+  });
+
+  it('applies partial penalty for moderate review load', () => {
+    const graph = makeGraph([
+      entry({ login: 'moderate', exactCommits: 4, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'light', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+    const loadData = new Map([['moderate', 2]]);
+    const results = matchReviewers(graph, 'other', {
+      topN: 2,
+      loadBalancing: true,
+      maxOpenReviews: 5,
+      reviewLoadData: loadData,
+    });
+    // moderate: 4*3 + ~2 = ~14, multiplier = 1 - (2/5*0.8) = 0.68 → ~9.5
+    // light: 3*3 + ~2 = ~11, no penalty → ~11
+    assert.equal(results[0].login, 'light');
+  });
+
+  it('includes review load in reasons when load balancing is enabled', () => {
+    const graph = makeGraph([
+      entry({ login: 'alice', exactCommits: 3, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+    const loadData = new Map([['alice', 3]]);
+    const results = matchReviewers(graph, 'bob', {
+      loadBalancing: true,
+      maxOpenReviews: 5,
+      reviewLoadData: loadData,
+    });
+    assert.ok(results[0].reasons.some((r) => r.includes('3 open PR(s)')));
+  });
+
+  it('caps load penalty at maxOpenReviews', () => {
+    const graph = makeGraph([
+      entry({ login: 'overloaded', exactCommits: 10, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+    // 10 reviews but max is 5 — penalty capped at the same as 5
+    const loadData5 = new Map([['overloaded', 5]]);
+    const loadData10 = new Map([['overloaded', 10]]);
+    const r5 = matchReviewers(graph, 'other', {
+      loadBalancing: true,
+      maxOpenReviews: 5,
+      reviewLoadData: loadData5,
+    });
+    const r10 = matchReviewers(graph, 'other', {
+      loadBalancing: true,
+      maxOpenReviews: 5,
+      reviewLoadData: loadData10,
+    });
+    assert.equal(r5[0].score, r10[0].score);
+  });
 });

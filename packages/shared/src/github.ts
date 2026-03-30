@@ -197,6 +197,52 @@ export interface RequestReviewersResult {
   failed: string[];
 }
 
+export async function getOpenReviewCount(
+  owner: string,
+  repo: string,
+  login: string,
+  token?: string
+): Promise<number> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls?state=open&per_page=100`;
+  console.debug(`[github] GET ${url} (checking review load for ${login})`);
+  const res = await githubFetch(url, { headers: headers(token) });
+  if (!res.ok) {
+    console.warn(`[github] getOpenReviewCount error ${res.status} for ${login}`);
+    return 0;
+  }
+  const pulls = await res.json() as Array<{ requested_reviewers?: Array<{ login: string }> }>;
+  return pulls.filter((pr) =>
+    pr.requested_reviewers?.some((r) => r.login.toLowerCase() === login.toLowerCase())
+  ).length;
+}
+
+export async function getOpenReviewCounts(
+  owner: string,
+  repo: string,
+  logins: string[],
+  token?: string
+): Promise<Map<string, number>> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls?state=open&per_page=100`;
+  console.debug(`[github] GET ${url} (checking review load for ${logins.length} reviewers)`);
+  const res = await githubFetch(url, { headers: headers(token) });
+  if (!res.ok) {
+    console.warn(`[github] getOpenReviewCounts error ${res.status}`);
+    return new Map();
+  }
+  const pulls = await res.json() as Array<{ requested_reviewers?: Array<{ login: string }> }>;
+  const counts = new Map<string, number>();
+  const loginSet = new Set(logins.map((l) => l.toLowerCase()));
+  for (const pr of pulls) {
+    for (const reviewer of pr.requested_reviewers ?? []) {
+      const lower = reviewer.login.toLowerCase();
+      if (loginSet.has(lower)) {
+        counts.set(reviewer.login, (counts.get(reviewer.login) ?? 0) + 1);
+      }
+    }
+  }
+  return counts;
+}
+
 export async function requestReviewers(
   owner: string,
   repo: string,

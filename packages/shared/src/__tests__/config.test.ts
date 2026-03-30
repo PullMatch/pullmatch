@@ -108,6 +108,29 @@ ignore:
     assert.deepStrictEqual(config.ignore, ['*.md']);
   });
 
+  it('parses loadBalancing and maxOpenReviews from config', () => {
+    const yaml = `
+reviewers:
+  loadBalancing: true
+  maxOpenReviews: 3
+`;
+    const config = parseRepoConfig(yaml);
+    assert.equal(config.reviewers.loadBalancing, true);
+    assert.equal(config.reviewers.maxOpenReviews, 3);
+  });
+
+  it('defaults loadBalancing to false and maxOpenReviews to 5', () => {
+    const config = parseRepoConfig('reviewers:\n  count: 2');
+    assert.equal(config.reviewers.loadBalancing, false);
+    assert.equal(config.reviewers.maxOpenReviews, 5);
+  });
+
+  it('ignores invalid maxOpenReviews values', () => {
+    assert.equal(parseRepoConfig('reviewers:\n  maxOpenReviews: -1').reviewers.maxOpenReviews, 5);
+    assert.equal(parseRepoConfig('reviewers:\n  maxOpenReviews: 0').reviewers.maxOpenReviews, 5);
+    assert.equal(parseRepoConfig('reviewers:\n  maxOpenReviews: "bad"').reviewers.maxOpenReviews, 5);
+  });
+
   it('handles partial weights (fills in defaults for missing)', () => {
     const yaml = `
 reviewers:

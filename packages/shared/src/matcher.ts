@@ -19,6 +19,9 @@ export interface MatcherOptions {
     frequency?: number;
   };
   includeCodeowners?: boolean;
+  loadBalancing?: boolean;
+  maxOpenReviews?: number;
+  reviewLoadData?: Map<string, number>;
 }
 
 /**
@@ -30,6 +33,8 @@ export function matcherOptionsFromConfig(config: ReviewerConfig): MatcherOptions
     exclude: config.exclude,
     weights: config.weights,
     includeCodeowners: config.includeCodeowners,
+    loadBalancing: config.loadBalancing,
+    maxOpenReviews: config.maxOpenReviews,
   };
 }
 
@@ -59,6 +64,9 @@ export function matchReviewers(
   const topN = opts.topN ?? 3;
   const excludeSet = new Set((opts.exclude ?? []).map((u) => u.toLowerCase()));
   const useCodeowners = opts.includeCodeowners ?? true;
+  const useLoadBalancing = opts.loadBalancing ?? false;
+  const maxOpenReviews = opts.maxOpenReviews ?? 5;
+  const reviewLoadData = opts.reviewLoadData;
 
   // Scoring weights: default to the original hardcoded weights
   const wFreq = opts.weights?.frequency ?? 0.3;
@@ -82,8 +90,18 @@ export function matchReviewers(
 
     const recency = recencyScore(entry.latestCommit);
     const codeOwnerBonus = (useCodeowners && entry.isCodeOwner) ? (entry.codeOwnerFiles ?? 0) : 0;
-    const score =
+    let score =
       entry.exactCommits * exactW + entry.dirCommits * dirW + recency * recencyW + codeOwnerBonus * codeownerW;
+
+    // Apply review load penalty: linear penalty scaling from 0 at 0 reviews to
+    // full penalty at maxOpenReviews. Score multiplier goes from 1.0 to 0.2.
+    if (useLoadBalancing && reviewLoadData) {
+      const openReviews = reviewLoadData.get(entry.login) ?? 0;
+      const loadRatio = Math.min(openReviews / maxOpenReviews, 1);
+      const loadMultiplier = 1 - (loadRatio * 0.8); // min multiplier is 0.2
+      score *= loadMultiplier;
+    }
+
     candidates.push({ entry, score });
   }
 
@@ -108,6 +126,13 @@ export function matchReviewers(
       (Date.now() - new Date(entry.latestCommit).getTime()) / (1000 * 60 * 60 * 24)
     );
     reasons.push(`Most recent commit was ${ageDays} day(s) ago`);
+
+    if (useLoadBalancing && reviewLoadData) {
+      const openReviews = reviewLoadData.get(entry.login) ?? 0;
+      if (openReviews > 0) {
+        reasons.push(`Currently reviewing ${openReviews} open PR(s)`);
+      }
+    }
 
     return {
       login: entry.login,
