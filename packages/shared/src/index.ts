@@ -27,5 +27,8 @@ export type { PRFile, Committer } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers } from './matcher.ts';
+export type { MatcherOptions } from './matcher.ts';
+export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners } from './teams.ts';
+export type { TeamMember, TeamResolutionResult } from './teams.ts';
 export { resolveInstallationToken, clearTokenCache, getTokenCacheSize } from './github-app-auth.ts';
 export type { TokenResolverConfig } from './github-app-auth.ts';
