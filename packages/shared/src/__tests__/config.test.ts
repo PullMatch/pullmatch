@@ -142,6 +142,32 @@ reviewers:
     assert.equal(config.reviewers.weights.codeowners, DEFAULT_CONFIG.reviewers.weights.codeowners);
     assert.equal(config.reviewers.weights.frequency, DEFAULT_CONFIG.reviewers.weights.frequency);
   });
+
+  it('parses notifications.slack when webhookUrl is present', () => {
+    const yaml = `
+notifications:
+  slack:
+    webhookUrl: "https://hooks.slack.com/services/T000/B000/XXXX"
+    channel: "#code-reviews"
+`;
+    const config = parseRepoConfig(yaml);
+    assert.deepStrictEqual(config.notifications, {
+      slack: {
+        webhookUrl: 'https://hooks.slack.com/services/T000/B000/XXXX',
+        channel: '#code-reviews',
+      },
+    });
+  });
+
+  it('ignores notifications.slack when webhookUrl is missing or invalid', () => {
+    const missingWebhook = parseRepoConfig('notifications:\n  slack:\n    channel: "#reviews"');
+    const invalidWebhook = parseRepoConfig('notifications:\n  slack:\n    webhookUrl: 123');
+    const blankWebhook = parseRepoConfig('notifications:\n  slack:\n    webhookUrl: "   "');
+
+    assert.deepStrictEqual(missingWebhook.notifications, {});
+    assert.deepStrictEqual(invalidWebhook.notifications, {});
+    assert.deepStrictEqual(blankWebhook.notifications, {});
+  });
 });
 
 describe('filterIgnoredFiles', () => {

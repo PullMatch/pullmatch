@@ -20,6 +20,8 @@ import {
   resolveInstallationToken,
   findExistingComment,
   updatePRComment,
+  formatSlackMessage,
+  sendSlackNotification,
   PULLMATCH_MARKER,
   type StatsCollector,
 } from '@pullmatch/shared';
@@ -187,6 +189,38 @@ async function runAnalysisPipeline(
       requested: result.requested,
       failed: result.failed,
     });
+  }
+
+  // 10. Optional Slack notifications (fully opt-in)
+  if (config.notifications.slack) {
+    const slackMessage = formatSlackMessage(
+      {
+        title: event.title,
+        author: event.author,
+        htmlUrl: event.htmlUrl,
+        repo: event.repo,
+        prNumber: event.prNumber,
+      },
+      recommendations.map((recommendation) => ({
+        login: recommendation.login,
+        score: recommendation.score,
+      }))
+    );
+
+    if (config.notifications.slack.channel) {
+      slackMessage.channel = config.notifications.slack.channel;
+    }
+
+    try {
+      await sendSlackNotification(config.notifications.slack.webhookUrl, slackMessage);
+      logger.info('Slack notification sent', { pr: event.prNumber, repo: event.repo });
+    } catch (err) {
+      logger.warn('Failed to send Slack notification', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   trackEvent({
