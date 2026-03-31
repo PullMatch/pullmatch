@@ -21,9 +21,11 @@ import {
   findExistingComment,
   updatePRComment,
   PULLMATCH_MARKER,
+  buildExpertiseMap,
+  formatExpertiseTag,
   type StatsCollector,
 } from '@pullmatch/shared';
-import type { ContextBrief, TokenResolverConfig } from '@pullmatch/shared';
+import type { ContextBrief, ExpertiseMap, TokenResolverConfig } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -144,7 +146,10 @@ async function runAnalysisPipeline(
     return;
   }
 
-  // 7. Generate context briefs for each reviewer
+  // 7. Build expertise map from contributor graph
+  const expertiseMap = buildExpertiseMap(graph, filenames);
+
+  // 8. Generate context briefs for each reviewer
   const briefs = new Map<string, ContextBrief>();
   for (const rec of recommendations) {
     briefs.set(rec.login, generateContextBrief(
@@ -154,8 +159,8 @@ async function runAnalysisPipeline(
     ));
   }
 
-  // 8. Format comment and create or update (dedup on synchronize)
-  const comment = formatReviewerComment(event, recommendations, briefs);
+  // 9. Format comment and create or update (dedup on synchronize)
+  const comment = formatReviewerComment(event, recommendations, briefs, expertiseMap);
   const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
 
   if (existingCommentId) {
@@ -175,7 +180,7 @@ async function runAnalysisPipeline(
     },
   }, statsCollector);
 
-  // 9. Auto-request reviewers via GitHub API (opt-in)
+  // 10. Auto-request reviewers via GitHub API (opt-in)
   if (config.reviewers.autoAssign) {
     const topLogins = recommendations
       .slice(0, config.reviewers.autoAssignCount)
@@ -204,7 +209,8 @@ async function runAnalysisPipeline(
 function formatReviewerComment(
   event: ParsedPREvent,
   recommendations: Array<{ login: string; score: number; reasons: string[] }>,
-  briefs: Map<string, ContextBrief>
+  briefs: Map<string, ContextBrief>,
+  expertiseMap?: ExpertiseMap
 ): string {
   const lines: string[] = [
     PULLMATCH_MARKER,
@@ -215,7 +221,11 @@ function formatReviewerComment(
   ];
 
   for (const rec of recommendations) {
-    lines.push(`### @${rec.login} (score: ${rec.score})`);
+    const expertiseTag = expertiseMap ? formatExpertiseTag(rec.login, expertiseMap) : undefined;
+    const header = expertiseTag
+      ? `### @${rec.login} (score: ${rec.score}) — ${expertiseTag}`
+      : `### @${rec.login} (score: ${rec.score})`;
+    lines.push(header);
     const brief = briefs.get(rec.login);
     if (brief && brief.focusAreas.length > 0) {
       lines.push(`**Focus areas:** ${brief.focusAreas.join(', ')}`);

@@ -39,3 +39,5 @@ export { createRequestId, trackEvent, serializeAnalyticsEvent } from './analytic
 export type { AnalyticsEvent, AnalyticsEventName, SerializedAnalyticsEvent, AnalyticsValue, AnalyticsEventConsumer } from './analytics.ts';
 export { StatsCollector } from './stats.ts';
 export type { DashboardStats, RecentAnalysis } from './stats.ts';
+export { classifyFile, buildExpertiseMap, formatExpertiseTag } from './expertise.ts';
+export type { ExpertiseMap, ExpertiseDomain } from './expertise.ts';
