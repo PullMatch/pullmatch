@@ -35,9 +35,20 @@ logger.info('Starting PullMatch API', {
 // --- App setup ---
 const app = new Hono();
 const statsCollector = new StatsCollector(20);
+const startedAt = Date.now();
 
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  return c.json({
+    status: 'ok',
+    version: '1.2.0',
+    uptime: Math.floor((Date.now() - startedAt) / 1000),
+    env: {
+      hasGithubToken: !!process.env.GITHUB_TOKEN_WRITE,
+      hasWebhookSecret: !!process.env.GITHUB_WEBHOOK_SECRET,
+      hasAppId: !!process.env.GITHUB_APP_ID,
+      hasPrivateKey: !!process.env.GITHUB_APP_PRIVATE_KEY,
+    },
+  });
 });
 
 app.get('/api/stats', (c) => c.json(statsCollector.getStats()));
