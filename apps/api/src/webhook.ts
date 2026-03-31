@@ -381,6 +381,54 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     }, statsCollector);
   });
 
+  webhooks.on(['pull_request_review.submitted', 'pull_request_review.dismissed'], ({ id, payload }) => {
+    const review = payload.review;
+    const pr = payload.pull_request;
+    const repo = payload.repository;
+    const reviewer = review.user?.login ?? 'unknown';
+    const repoFullName = repo.full_name;
+    const prNumber = pr.number;
+
+    // Map GitHub review state to our action type
+    let action: ReviewAction;
+    if (payload.action === 'dismissed') {
+      action = 'dismissed';
+    } else {
+      // submitted event — review.state is 'approved', 'changes_requested', or 'commented'
+      const state = review.state?.toLowerCase();
+      if (state === 'approved') {
+        action = 'approved';
+      } else if (state === 'changes_requested') {
+        action = 'changes_requested';
+      } else {
+        action = 'commented';
+      }
+    }
+
+    const timestamp = review.submitted_at ?? new Date().toISOString();
+
+    recordReviewOutcome(repoFullName, prNumber, reviewer, action, timestamp);
+
+    logger.info('Review outcome recorded', {
+      deliveryId: id,
+      repo: repoFullName,
+      pr: prNumber,
+      reviewer,
+      action,
+    });
+
+    trackEvent({
+      name: 'review_completed',
+      requestId: id,
+      properties: {
+        repo: repoFullName,
+        pr_number: prNumber,
+        reviewer,
+        action,
+      },
+    }, statsCollector);
+  });
+
   const router = new Hono();
 
   router.post('/webhook', async (c) => {
