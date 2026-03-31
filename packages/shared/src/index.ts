@@ -16,10 +16,8 @@ export interface ReviewerRecommendation {
 }
 
 export interface ContextBrief {
-  prId: string;
   reviewer: string;
-  summary: string;
-  focusAreas: string[];
+  brief: string;
 }
 
 export { fetchPRFiles, fetchRecentCommitters, postPRComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, PULLMATCH_MARKER } from './github.ts';
@@ -45,3 +43,5 @@ export { StatsCollector } from './stats.ts';
 export type { DashboardStats, RecentAnalysis } from './stats.ts';
 export { classifyFile, buildExpertiseMap, formatExpertiseTag } from './expertise.ts';
 export type { ExpertiseMap, ExpertiseDomain } from './expertise.ts';
+export { recordReviewOutcome, getReviewStats, getOutcomesForPR, clearReviewStore } from './review-tracker.ts';
+export type { ReviewAction, ReviewOutcome, ReviewerStats } from './review-tracker.ts';

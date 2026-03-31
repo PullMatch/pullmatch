@@ -1,85 +1,123 @@
-import type { ContextBrief } from './index.ts';
-import type { ContributorEntry } from './contributor-graph.ts';
+import type { ExpertiseMap } from './expertise.ts';
+import type { ReviewerRecommendation, ContextBrief } from './index.ts';
+import { classifyFile } from './expertise.ts';
 
-/**
- * Group file paths by their top-level directory and summarize areas changed.
- */
-function summarizeChanges(filesChanged: string[]): string {
-  if (filesChanged.length === 0) return 'No files changed';
-  if (filesChanged.length === 1) return `Changes to ${filesChanged[0]}`;
+const DOMAIN_FOCUS: Record<string, string> = {
+  Frontend: 'UI behavior, component state, and accessibility.',
+  API: 'request/response contracts, auth paths, and error handling.',
+  Database: 'schema integrity, query safety, and data migration impact.',
+  DevOps: 'deployment safety, runtime configuration, and operational risk.',
+  Testing: 'coverage quality for regressions and edge-case behavior.',
+  Config: 'default values, environment handling, and compatibility.',
+  Docs: 'accuracy of developer guidance and examples.',
+};
 
-  const dirCounts = new Map<string, number>();
-  for (const file of filesChanged) {
-    const idx = file.indexOf('/');
-    const dir = idx > 0 ? file.slice(0, idx) : '.';
-    dirCounts.set(dir, (dirCounts.get(dir) ?? 0) + 1);
+function topCommitSignal(commitMessages: string[]): 'feat' | 'fix' | 'refactor' | 'mixed' | 'none' {
+  if (commitMessages.length === 0) return 'none';
+
+  let feat = 0;
+  let fix = 0;
+  let refactor = 0;
+
+  for (const message of commitMessages) {
+    const match = message.trim().match(/^(feat|fix|refactor)(\(.+\))?:/i);
+    const prefix = match?.[1]?.toLowerCase();
+    if (prefix === 'feat') feat++;
+    if (prefix === 'fix') fix++;
+    if (prefix === 'refactor') refactor++;
   }
 
-  // Sort by count descending, take top 3
-  const topDirs = Array.from(dirCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([dir]) => dir);
+  const ranked = [
+    { key: 'feat' as const, count: feat },
+    { key: 'fix' as const, count: fix },
+    { key: 'refactor' as const, count: refactor },
+  ].sort((a, b) => b.count - a.count);
 
-  const areas = topDirs.join(', ');
-  const suffix = dirCounts.size > 3 ? ` and ${dirCounts.size - 3} more area(s)` : '';
-  return `Changes to ${areas}${suffix}`;
+  if (ranked[0].count === 0) return 'mixed';
+  if (ranked[0].count === ranked[1].count) return 'mixed';
+  return ranked[0].key;
 }
 
-/**
- * Find the files/directories where a reviewer has expertise that overlap with the PR.
- */
-function findFocusAreas(
+function summarizeCommitIntent(commitMessages: string[]): string {
+  const signal = topCommitSignal(commitMessages);
+  if (signal === 'feat') return 'Commits are feature-heavy, so validate new behavior and integration paths.';
+  if (signal === 'fix') return 'Commits are fix-focused, so prioritize regression and edge-case checks.';
+  if (signal === 'refactor') return 'Commits are refactor-focused, so confirm no behavior drift was introduced.';
+  if (signal === 'mixed') return 'Commits are mixed; review for both behavior changes and regression risk.';
+  return 'No commit messages were provided; prioritize correctness and backward compatibility checks.';
+}
+
+function pickReviewerDomain(reviewer: string, expertiseMap?: ExpertiseMap): string | undefined {
+  return expertiseMap?.[reviewer]?.[0]?.domain;
+}
+
+function filesForDomain(changedFiles: string[], domain?: string): string[] {
+  if (!domain) return [];
+  return changedFiles.filter((file) => classifyFile(file).includes(domain));
+}
+
+function formatFileList(files: string[]): string {
+  if (files.length === 0) return 'no specific files';
+  if (files.length === 1) return files[0];
+  if (files.length === 2) return `${files[0]} and ${files[1]}`;
+  return `${files[0]}, ${files[1]}, and ${files.length - 2} more file(s)`;
+}
+
+function summarizeChangesForReviewer(
   reviewer: string,
-  filesChanged: string[],
-  graph: Map<string, ContributorEntry>
-): string[] {
-  const entry = graph.get(reviewer);
-  if (!entry) return [];
+  changedFiles: string[],
+  expertiseMap?: ExpertiseMap
+): string {
+  if (changedFiles.length === 0) return 'No changed files were provided.';
+  const domain = pickReviewerDomain(reviewer, expertiseMap);
+  const domainFiles = filesForDomain(changedFiles, domain);
 
-  const areas: string[] = [];
-
-  // Check exact file matches
-  if (entry.exactCommits > 0) {
-    // We know the reviewer committed to some of the exact files — list the changed files
-    // as focus areas since they have direct commit history there
-    for (const file of filesChanged) {
-      areas.push(`${file} (direct contributor)`);
-    }
+  if (domain && domainFiles.length > 0) {
+    return `${domainFiles.length} changed file(s) match your ${domain} domain: ${formatFileList(domainFiles)}.`;
   }
 
-  // Check directory-level matches
-  if (entry.dirCommits > 0) {
-    const dirs = new Set<string>();
-    for (const file of filesChanged) {
-      const idx = file.lastIndexOf('/');
-      if (idx > 0) dirs.add(file.slice(0, idx));
-    }
-    for (const dir of dirs) {
-      areas.push(`${dir}/ (directory contributor)`);
-    }
+  return `Primary touched files: ${formatFileList(changedFiles)}.`;
+}
+
+function focusGuidanceForReviewer(reviewer: string, changedFiles: string[], expertiseMap?: ExpertiseMap): string {
+  const domain = pickReviewerDomain(reviewer, expertiseMap);
+  if (domain && DOMAIN_FOCUS[domain]) {
+    return `${domain} focus: ${DOMAIN_FOCUS[domain]}`;
   }
 
-  if (entry.isCodeOwner) {
-    areas.push(`Code owner for ${entry.codeOwnerFiles ?? 0} file(s)`);
+  const touchedDomains = new Set<string>();
+  for (const file of changedFiles) {
+    for (const touched of classifyFile(file)) {
+      touchedDomains.add(touched);
+    }
   }
-
-  return areas;
+  if (touchedDomains.size > 0) {
+    return `Cross-domain review (${Array.from(touchedDomains).slice(0, 2).join(', ')}): verify boundary assumptions and side effects.`;
+  }
+  return 'General review: check behavior correctness, test coverage, and maintainability.';
 }
 
 /**
- * Generate a context brief for a reviewer on a given PR.
- * Provides a summary of what changed and which areas are relevant to the reviewer.
+ * Generate 3-line deterministic markdown context briefs for suggested reviewers.
  */
 export function generateContextBrief(
-  pr: { title: string; branch: string; filesChanged: string[] },
-  reviewer: string,
-  graph: Map<string, ContributorEntry>
-): ContextBrief {
-  return {
-    prId: pr.branch,
-    reviewer,
-    summary: summarizeChanges(pr.filesChanged),
-    focusAreas: findFocusAreas(reviewer, pr.filesChanged, graph),
-  };
+  reviewers: ReviewerRecommendation[],
+  changedFiles: string[],
+  commitMessages: string[],
+  expertiseMap?: ExpertiseMap
+): ContextBrief[] {
+  return reviewers.map((reviewer) => {
+    const whatChanged = summarizeChangesForReviewer(reviewer.login, changedFiles, expertiseMap);
+    const whyItMatters = summarizeCommitIntent(commitMessages);
+    const whatToLookFor = focusGuidanceForReviewer(reviewer.login, changedFiles, expertiseMap);
+
+    return {
+      reviewer: reviewer.login,
+      brief: [
+        `- **What changed:** ${whatChanged}`,
+        `- **Why it matters:** ${whyItMatters}`,
+        `- **What to look for:** ${whatToLookFor}`,
+      ].join('\n'),
+    } satisfies ContextBrief;
+  });
 }

@@ -1,92 +1,83 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateContextBrief } from '../context-brief.ts';
-import type { ContributorEntry } from '../contributor-graph.ts';
+import type { ExpertiseMap } from '../expertise.ts';
+import type { ReviewerRecommendation } from '../index.ts';
 
-function makeGraph(entries: ContributorEntry[]): Map<string, ContributorEntry> {
-  const m = new Map<string, ContributorEntry>();
-  for (const e of entries) m.set(e.login, e);
-  return m;
-}
-
-const recentDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+const recommendations: ReviewerRecommendation[] = [
+  { login: 'alice', score: 12.4, reasons: ['strong ownership in API files'] },
+  { login: 'bob', score: 10.1, reasons: ['recent activity in UI files'] },
+];
 
 describe('generateContextBrief', () => {
-  it('generates summary from file paths', () => {
-    const graph = makeGraph([
-      { login: 'alice', exactCommits: 3, dirCommits: 1, latestCommit: recentDate },
-    ]);
-    const brief = generateContextBrief(
-      { title: 'Fix auth bug', branch: 'fix/auth', filesChanged: ['src/auth.ts', 'src/middleware.ts', 'tests/auth.test.ts'] },
-      'alice',
-      graph
+  it('returns one markdown brief per recommended reviewer', () => {
+    const briefs = generateContextBrief(
+      recommendations,
+      ['apps/api/src/webhook.ts', 'packages/shared/src/matcher.ts'],
+      ['feat(api): add reviewer ranking signal']
     );
-    assert.equal(brief.reviewer, 'alice');
-    assert.equal(brief.prId, 'fix/auth');
-    assert.ok(brief.summary.includes('src'));
-    assert.ok(brief.summary.includes('tests'));
+
+    assert.equal(briefs.length, 2);
+    assert.equal(briefs[0].reviewer, 'alice');
+    assert.ok(briefs[0].brief.includes('**What changed:**'));
+    assert.ok(briefs[0].brief.includes('**Why it matters:**'));
+    assert.ok(briefs[0].brief.includes('**What to look for:**'));
   });
 
-  it('focus areas match reviewer expertise to changed files', () => {
-    const graph = makeGraph([
-      { login: 'bob', exactCommits: 2, dirCommits: 1, latestCommit: recentDate },
-    ]);
+  it('extracts fix signal from commit messages', () => {
     const brief = generateContextBrief(
-      { title: 'Update API', branch: 'feat/api', filesChanged: ['apps/api/src/webhook.ts', 'packages/shared/src/matcher.ts'] },
-      'bob',
-      graph
-    );
-    assert.ok(brief.focusAreas.length > 0);
-    // Should have both exact file and directory entries
-    assert.ok(brief.focusAreas.some(a => a.includes('direct contributor')));
-    assert.ok(brief.focusAreas.some(a => a.includes('directory contributor')));
+      [{ login: 'alice', score: 9, reasons: [] }],
+      ['apps/api/src/routes/pr.ts'],
+      ['fix(api): handle null reviewer list', 'fix: recover from API timeout']
+    )[0];
+
+    assert.ok(brief.brief.includes('fix-focused'));
   });
 
-  it('handles empty graph gracefully', () => {
-    const graph = new Map<string, ContributorEntry>();
+  it('uses expertise domain to suggest targeted focus areas', () => {
+    const expertiseMap: ExpertiseMap = {
+      alice: [{ domain: 'API', score: 8 }],
+    };
+
     const brief = generateContextBrief(
-      { title: 'Update README', branch: 'docs/readme', filesChanged: ['README.md'] },
-      'charlie',
-      graph
-    );
-    assert.equal(brief.reviewer, 'charlie');
-    assert.equal(brief.focusAreas.length, 0);
-    assert.ok(brief.summary.length > 0);
+      [{ login: 'alice', score: 9, reasons: [] }],
+      ['apps/api/src/webhook.ts', 'docs/MVP.md'],
+      ['feat(api): improve webhook router'],
+      expertiseMap
+    )[0];
+
+    assert.ok(brief.brief.includes('API focus:'));
+    assert.ok(brief.brief.includes('match your API domain'));
   });
 
-  it('handles empty filesChanged', () => {
-    const graph = makeGraph([
-      { login: 'alice', exactCommits: 1, dirCommits: 0, latestCommit: recentDate },
-    ]);
+  it('handles no commits with deterministic fallback text', () => {
     const brief = generateContextBrief(
-      { title: 'Empty PR', branch: 'empty', filesChanged: [] },
-      'alice',
-      graph
-    );
-    assert.equal(brief.summary, 'No files changed');
+      [{ login: 'alice', score: 9, reasons: [] }],
+      ['packages/shared/src/matcher.ts'],
+      []
+    )[0];
+
+    assert.ok(brief.brief.includes('No commit messages were provided'));
   });
 
-  it('handles single file change', () => {
-    const graph = makeGraph([
-      { login: 'alice', exactCommits: 1, dirCommits: 0, latestCommit: recentDate },
-    ]);
+  it('handles single-file changes and reviewer without prior history', () => {
     const brief = generateContextBrief(
-      { title: 'Single file', branch: 'single', filesChanged: ['src/index.ts'] },
-      'alice',
-      graph
-    );
-    assert.equal(brief.summary, 'Changes to src/index.ts');
+      [{ login: 'new-reviewer', score: 4, reasons: [] }],
+      ['README.md'],
+      ['refactor(docs): simplify setup section']
+    )[0];
+
+    assert.ok(brief.brief.includes('Primary touched files: README.md.'));
+    assert.ok(brief.brief.includes('Cross-domain review (Docs):'));
   });
 
-  it('includes code owner info in focus areas', () => {
-    const graph = makeGraph([
-      { login: 'alice', exactCommits: 0, dirCommits: 0, latestCommit: recentDate, isCodeOwner: true, codeOwnerFiles: 3 },
-    ]);
+  it('handles empty changed files input', () => {
     const brief = generateContextBrief(
-      { title: 'Fix', branch: 'fix', filesChanged: ['src/a.ts'] },
-      'alice',
-      graph
-    );
-    assert.ok(brief.focusAreas.some(a => a.includes('Code owner')));
+      [{ login: 'alice', score: 6, reasons: [] }],
+      [],
+      ['feat: add support for context briefs']
+    )[0];
+
+    assert.ok(brief.brief.includes('No changed files were provided.'));
   });
 });

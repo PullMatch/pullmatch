@@ -25,9 +25,10 @@ import {
   PULLMATCH_MARKER,
   buildExpertiseMap,
   formatExpertiseTag,
+  recordReviewOutcome,
   type StatsCollector,
 } from '@pullmatch/shared';
-import type { ContextBrief, ExpertiseMap, TokenResolverConfig } from '@pullmatch/shared';
+import type { ContextBrief, ExpertiseMap, TokenResolverConfig, ReviewAction } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -152,14 +153,9 @@ async function runAnalysisPipeline(
   const expertiseMap = buildExpertiseMap(graph, filenames);
 
   // 8. Generate context briefs for each reviewer
-  const briefs = new Map<string, ContextBrief>();
-  for (const rec of recommendations) {
-    briefs.set(rec.login, generateContextBrief(
-      { title: event.title, branch: event.branch, filesChanged: filenames },
-      rec.login,
-      graph
-    ));
-  }
+  const commitMessages: string[] = [];
+  const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
+  const briefs = new Map<string, ContextBrief>(generatedBriefs.map((brief) => [brief.reviewer, brief]));
 
   // 9. Format comment and create or update (dedup on synchronize)
   const comment = formatReviewerComment(event, recommendations, briefs, expertiseMap);
@@ -261,8 +257,8 @@ function formatReviewerComment(
       : `### @${rec.login} (score: ${rec.score})`;
     lines.push(header);
     const brief = briefs.get(rec.login);
-    if (brief && brief.focusAreas.length > 0) {
-      lines.push(`**Focus areas:** ${brief.focusAreas.join(', ')}`);
+    if (brief) {
+      lines.push(brief.brief);
     }
     for (const reason of rec.reasons) {
       lines.push(`- ${reason}`);
