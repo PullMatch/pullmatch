@@ -29,6 +29,8 @@ export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers, matcherOptionsFromConfig } from './matcher.ts';
 export type { MatcherOptions } from './matcher.ts';
 export { generateContextBrief } from './context-brief.ts';
+export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners } from './teams.ts';
+export type { TeamMember, TeamResolutionResult } from './teams.ts';
 export { resolveInstallationToken, clearTokenCache, getTokenCacheSize } from './github-app-auth.ts';
 export type { TokenResolverConfig } from './github-app-auth.ts';
 export { loadRepoConfig, parseRepoConfig, filterIgnoredFiles, DEFAULT_CONFIG } from './config.ts';
