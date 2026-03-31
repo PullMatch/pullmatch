@@ -24,6 +24,10 @@ export interface SerializedAnalyticsEvent {
   properties: Record<string, AnalyticsValue>;
 }
 
+export interface AnalyticsEventConsumer {
+  increment(event: SerializedAnalyticsEvent): void;
+}
+
 export function createRequestId(): string {
   return randomUUID();
 }
@@ -38,7 +42,8 @@ export function serializeAnalyticsEvent(event: AnalyticsEvent): SerializedAnalyt
   };
 }
 
-export function trackEvent(event: AnalyticsEvent): void {
+export function trackEvent(event: AnalyticsEvent, consumer?: AnalyticsEventConsumer): void {
   const serialized = serializeAnalyticsEvent(event);
+  consumer?.increment(serialized);
   console.log(JSON.stringify(serialized));
 }

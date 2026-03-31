@@ -16,11 +16,23 @@ export interface ReviewerConfig {
   autoAssign: boolean;
   autoAssignCount: number;
   weights: ReviewerWeights;
+  loadBalancing: boolean;
+  maxOpenReviews: number;
+}
+
+export interface SlackConfig {
+  webhookUrl: string;
+  channel?: string;
+}
+
+export interface NotificationsConfig {
+  slack?: SlackConfig;
 }
 
 export interface RepoConfig {
   reviewers: ReviewerConfig;
   ignore: string[];
+  notifications: NotificationsConfig;
 }
 
 export const DEFAULT_CONFIG: RepoConfig = {
@@ -35,8 +47,11 @@ export const DEFAULT_CONFIG: RepoConfig = {
       recency: 0.3,
       frequency: 0.3,
     },
+    loadBalancing: false,
+    maxOpenReviews: 5,
   },
   ignore: [],
+  notifications: {},
 };
 
 /**
@@ -66,11 +81,14 @@ export function parseRepoConfig(raw: string): RepoConfig {
     autoAssign: validBool(rev?.autoAssign, DEFAULT_CONFIG.reviewers.autoAssign),
     autoAssignCount: validPositiveInt(rev?.autoAssignCount, DEFAULT_CONFIG.reviewers.autoAssignCount),
     weights: validWeights(rev?.weights as Record<string, unknown> | undefined),
+    loadBalancing: validBool(rev?.loadBalancing, DEFAULT_CONFIG.reviewers.loadBalancing),
+    maxOpenReviews: validPositiveInt(rev?.maxOpenReviews, DEFAULT_CONFIG.reviewers.maxOpenReviews),
   };
 
   const ignore = validStringArray(doc.ignore, DEFAULT_CONFIG.ignore);
+  const notifications = validNotifications(doc.notifications as Record<string, unknown> | undefined);
 
-  return { reviewers, ignore };
+  return { reviewers, ignore, notifications };
 }
 
 /**
@@ -146,4 +164,33 @@ function validWeights(val: Record<string, unknown> | undefined): ReviewerWeights
 function validWeight(val: unknown, fallback: number): number {
   if (typeof val === 'number' && val >= 0 && val <= 1) return val;
   return fallback;
+}
+
+function validNotifications(val: Record<string, unknown> | undefined): NotificationsConfig {
+  if (!val || typeof val !== 'object') {
+    return {};
+  }
+
+  const slackRaw = val.slack as Record<string, unknown> | undefined;
+  if (!slackRaw || typeof slackRaw !== 'object') {
+    return {};
+  }
+
+  const webhookUrl = validNonEmptyString(slackRaw.webhookUrl);
+  if (!webhookUrl) {
+    return {};
+  }
+
+  const channel = validNonEmptyString(slackRaw.channel);
+  return {
+    slack: channel ? { webhookUrl, channel } : { webhookUrl },
+  };
+}
+
+function validNonEmptyString(val: unknown): string | undefined {
+  if (typeof val !== 'string') {
+    return undefined;
+  }
+  const trimmed = val.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }

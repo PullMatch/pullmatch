@@ -6,6 +6,7 @@ import {
   matchReviewers,
   postPRComment,
   requestReviewers,
+  getOpenReviewCounts,
   loadRepoConfig,
   filterIgnoredFiles,
   matcherOptionsFromConfig,
@@ -17,8 +18,16 @@ import {
   GitHubRateLimitError,
   generateContextBrief,
   resolveInstallationToken,
+  findExistingComment,
+  updatePRComment,
+  formatSlackMessage,
+  sendSlackNotification,
+  PULLMATCH_MARKER,
+  buildExpertiseMap,
+  formatExpertiseTag,
+  type StatsCollector,
 } from '@pullmatch/shared';
-import type { ContextBrief, TokenResolverConfig } from '@pullmatch/shared';
+import type { ContextBrief, ExpertiseMap, TokenResolverConfig } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 
 export interface ParsedPREvent {
@@ -38,12 +47,34 @@ export interface ParsedPREvent {
   installationId?: number;
 }
 
-async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResolverConfig): Promise<void> {
+async function runAnalysisPipeline(
+  event: ParsedPREvent,
+  tokenConfig: TokenResolverConfig,
+  statsCollector?: StatsCollector
+): Promise<void> {
+  const startedAtMs = Date.now();
   logger.info('Starting analysis pipeline', { pr: event.prNumber, repo: event.repo });
+  trackEvent({
+    name: 'pr_received',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+    },
+  }, statsCollector);
 
   const githubToken = await resolveInstallationToken(event.installationId, tokenConfig);
   if (!githubToken) {
     logger.warn('No GitHub token available — skipping reviewer analysis');
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'missing_token',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
@@ -55,6 +86,15 @@ async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResol
   const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
   if (prFiles.length === 0) {
     logger.info('No files changed — skipping', { pr: event.prNumber });
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'no_changed_files',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
@@ -65,21 +105,53 @@ async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResol
 
   if (filenames.length === 0) {
     logger.info('All files matched ignore patterns — skipping', { pr: event.prNumber });
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'all_files_ignored',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
   // 4. Build contributor graph from commit history for changed files
   const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
 
-  // 5. Match top reviewers (excluding PR author, applying config)
-  const recommendations = matchReviewers(graph, event.author, matcherOptionsFromConfig(config.reviewers));
+  // 5. Optionally fetch review load data for load balancing
+  const matcherOpts = matcherOptionsFromConfig(config.reviewers);
+  if (config.reviewers.loadBalancing) {
+    const candidateLogins = Array.from(graph.keys()).filter((l) => l !== event.author);
+    if (candidateLogins.length > 0) {
+      const loadData = await getOpenReviewCounts(event.owner, event.repoName, candidateLogins, githubToken);
+      matcherOpts.reviewLoadData = loadData;
+      logger.info('Review load data fetched', { pr: event.prNumber, candidates: candidateLogins.length, loaded: loadData.size });
+    }
+  }
+
+  // 6. Match top reviewers (excluding PR author, applying config)
+  const recommendations = matchReviewers(graph, event.author, matcherOpts);
 
   if (recommendations.length === 0) {
     logger.info('No reviewer candidates found', { pr: event.prNumber });
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'no_reviewer_candidates',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
-  // 6. Generate context briefs for each reviewer
+  // 7. Build expertise map from contributor graph
+  const expertiseMap = buildExpertiseMap(graph, filenames);
+
+  // 8. Generate context briefs for each reviewer
   const briefs = new Map<string, ContextBrief>();
   for (const rec of recommendations) {
     briefs.set(rec.login, generateContextBrief(
@@ -89,12 +161,28 @@ async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResol
     ));
   }
 
-  // 7. Format and post comment
-  const comment = formatReviewerComment(event, recommendations, briefs);
-  await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
-  logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  // 9. Format comment and create or update (dedup on synchronize)
+  const comment = formatReviewerComment(event, recommendations, briefs, expertiseMap);
+  const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
 
-  // 8. Auto-request reviewers via GitHub API (opt-in)
+  if (existingCommentId) {
+    await updatePRComment(event.owner, event.repoName, existingCommentId, comment, githubToken);
+    logger.info('Updated reviewer suggestions', { pr: event.prNumber, repo: event.repo, commentId: existingCommentId });
+  } else {
+    await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+    logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  }
+  trackEvent({
+    name: 'comment_posted',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+      mode: existingCommentId ? 'update' : 'create',
+    },
+  }, statsCollector);
+
+  // 10. Auto-request reviewers via GitHub API (opt-in)
   if (config.reviewers.autoAssign) {
     const topLogins = recommendations
       .slice(0, config.reviewers.autoAssignCount)
@@ -107,14 +195,59 @@ async function runAnalysisPipeline(event: ParsedPREvent, tokenConfig: TokenResol
       failed: result.failed,
     });
   }
+
+  // 10. Optional Slack notifications (fully opt-in)
+  if (config.notifications.slack) {
+    const slackMessage = formatSlackMessage(
+      {
+        title: event.title,
+        author: event.author,
+        htmlUrl: event.htmlUrl,
+        repo: event.repo,
+        prNumber: event.prNumber,
+      },
+      recommendations.map((recommendation) => ({
+        login: recommendation.login,
+        score: recommendation.score,
+      }))
+    );
+
+    if (config.notifications.slack.channel) {
+      slackMessage.channel = config.notifications.slack.channel;
+    }
+
+    try {
+      await sendSlackNotification(config.notifications.slack.webhookUrl, slackMessage);
+      logger.info('Slack notification sent', { pr: event.prNumber, repo: event.repo });
+    } catch (err) {
+      logger.warn('Failed to send Slack notification', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  trackEvent({
+    name: 'analysis_complete',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+      reviewers_suggested: recommendations.length,
+      response_ms: Date.now() - startedAtMs,
+    },
+  }, statsCollector);
 }
 
 function formatReviewerComment(
   event: ParsedPREvent,
   recommendations: Array<{ login: string; score: number; reasons: string[] }>,
-  briefs: Map<string, ContextBrief>
+  briefs: Map<string, ContextBrief>,
+  expertiseMap?: ExpertiseMap
 ): string {
   const lines: string[] = [
+    PULLMATCH_MARKER,
     '## PullMatch Reviewer Suggestions',
     '',
     `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
@@ -122,7 +255,11 @@ function formatReviewerComment(
   ];
 
   for (const rec of recommendations) {
-    lines.push(`### @${rec.login} (score: ${rec.score})`);
+    const expertiseTag = expertiseMap ? formatExpertiseTag(rec.login, expertiseMap) : undefined;
+    const header = expertiseTag
+      ? `### @${rec.login} (score: ${rec.score}) — ${expertiseTag}`
+      : `### @${rec.login} (score: ${rec.score})`;
+    lines.push(header);
     const brief = briefs.get(rec.login);
     if (brief && brief.focusAreas.length > 0) {
       lines.push(`**Focus areas:** ${brief.focusAreas.join(', ')}`);
@@ -139,7 +276,7 @@ function formatReviewerComment(
   return lines.join('\n');
 }
 
-export function createWebhookRouter(webhookSecret: string): Hono {
+export function createWebhookRouter(webhookSecret: string, statsCollector?: StatsCollector): Hono {
   const tokenConfig: TokenResolverConfig = {
     appId: process.env.GITHUB_APP_ID ?? '',
     privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
@@ -171,9 +308,18 @@ export function createWebhookRouter(webhookSecret: string): Hono {
     };
 
     // Resolve token per-event (installation tokens are short-lived and per-org)
-    runAnalysisPipeline(parsed, tokenConfig).catch(async (err) => {
+    runAnalysisPipeline(parsed, tokenConfig, statsCollector).catch(async (err) => {
       const errorMessage = err instanceof Error ? err.message : String(err);
       logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
+      trackEvent({
+        name: 'analysis_error',
+        requestId: parsed.deliveryId,
+        properties: {
+          repo: parsed.repo,
+          pr_number: parsed.prNumber,
+          error: errorMessage,
+        },
+      }, statsCollector);
 
       // Post an error comment on the PR so the user knows what happened
       try {
@@ -212,7 +358,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
         installerLogin: parsed.installerLogin,
         installationId: parsed.installationId,
       },
-    });
+    }, statsCollector);
   });
 
   webhooks.on(['installation_repositories.added', 'installation_repositories.removed'], ({ id, payload }) => {
@@ -236,7 +382,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
         installerLogin: parsed.installerLogin,
         installationId: parsed.installationId,
       },
-    });
+    }, statsCollector);
   });
 
   const router = new Hono();

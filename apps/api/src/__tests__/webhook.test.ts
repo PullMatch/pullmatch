@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { Webhooks } from '@octokit/webhooks';
+import { PULLMATCH_MARKER } from '@pullmatch/shared';
 import { createWebhookRouter } from '../webhook.ts';
 
 type FetchLike = typeof fetch;
@@ -168,6 +169,10 @@ describe('createWebhookRouter', () => {
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
         ]);
       }
+      // List comments — no existing PullMatch comment
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
       if (url.includes('/issues/42/comments') && init?.method === 'POST') {
         const parsed = JSON.parse(String(init.body)) as { body: string };
         commentBody = parsed.body;
@@ -187,6 +192,7 @@ describe('createWebhookRouter', () => {
     assert.deepEqual(await response.json(), { ok: true });
 
     await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes(PULLMATCH_MARKER), 'comment should contain HTML marker');
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
     assert.ok(commentBody!.includes('_Powered by [PullMatch](https://github.com/pullmatch)_'));
@@ -229,5 +235,64 @@ describe('createWebhookRouter', () => {
     assert.deepEqual(await response.json(), { ok: true });
     assert.equal(fetchCalls.length, 0);
     assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('updates existing comment on synchronize instead of posting a new one', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('synchronize'));
+
+    let updatedBody: string | null = null;
+    let createdComment = false;
+    const existingCommentId = 999;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      // List comments — return one with PullMatch marker
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([
+          { id: existingCommentId, body: `${PULLMATCH_MARKER}\n## PullMatch Reviewer Suggestions\nold content` },
+        ]);
+      }
+      // Update comment (PATCH)
+      if (url.includes(`/issues/comments/${existingCommentId}`) && init?.method === 'PATCH') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        updatedBody = parsed.body;
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      // Should NOT create a new comment
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        createdComment = true;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+
+    await waitFor(() => updatedBody !== null);
+    assert.ok(updatedBody!.includes(PULLMATCH_MARKER), 'updated comment should contain marker');
+    assert.ok(updatedBody!.includes('## PullMatch Reviewer Suggestions'));
+    assert.equal(createdComment, false, 'should not create a new comment when one exists');
   });
 });
