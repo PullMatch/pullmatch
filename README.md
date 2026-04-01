@@ -72,4 +72,4 @@ cd apps/api && pnpm dev
 
 ## License
 
-Private beta. See [GitHub App listing](https://github.com/apps/pullmatch) for access.
+MIT — see [LICENSE](LICENSE) for details.
