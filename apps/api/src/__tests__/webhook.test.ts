@@ -157,7 +157,15 @@ describe('createWebhookRouter', () => {
       const url = String(input);
 
       if (url.includes('/pulls/42/files')) {
-        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+        return new Response(JSON.stringify([{ filename: 'src/matcher.ts', status: 'modified' }]), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-ratelimit-limit': '5000',
+            'x-ratelimit-remaining': '5',
+            'x-ratelimit-reset': '1900000000',
+          },
+        });
       }
       if (url.includes('/pulls/42/commits')) {
         return Response.json([{ commit: { message: 'fix(api): improve matching determinism' } }]);
@@ -199,6 +207,7 @@ describe('createWebhookRouter', () => {
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
     assert.ok(commentBody!.includes('> **Context:**'));
+    assert.ok(commentBody!.includes('GitHub API rate limit is low: 5/5000 remaining'));
     assert.ok(commentBody!.includes('_Powered by [PullMatch](https://github.com/pullmatch)_'));
     assert.ok(response.headers.get('x-pullmatch-request-id'));
   });
@@ -302,5 +311,47 @@ describe('createWebhookRouter', () => {
     assert.ok(updatedBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(updatedBody!.includes('> **Context:**'));
     assert.equal(createdComment, false, 'should not create a new comment when one exists');
+  });
+
+  it('posts a degraded comment when contributor graph data is unavailable', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): fallback behavior' } }]);
+      }
+      if (url.includes('/commits?path=')) {
+        throw new Error('network unavailable');
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes('No confident reviewer candidates were found for this PR yet.'));
+    assert.ok(commentBody!.includes('### Analysis Notes'));
+    assert.ok(commentBody!.includes('No reviewer candidates were found from commit history at this time.'));
   });
 });
