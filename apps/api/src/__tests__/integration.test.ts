@@ -132,6 +132,9 @@ describe('webhook integration pipeline', () => {
       if (url.includes('/pulls/42/files')) {
         return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
       }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): guard null reviewer candidate' } }]);
+      }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
@@ -170,6 +173,7 @@ describe('webhook integration pipeline', () => {
     await waitFor(() => commentBody !== null);
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
+    assert.ok(commentBody!.includes('> **Context:**'));
     assert.equal(reviewerRequestCalled, false);
   });
 
@@ -203,6 +207,9 @@ describe('webhook integration pipeline', () => {
           { filename: 'src/matcher.ts', status: 'modified' },
           { filename: 'docs/changelog.md', status: 'modified' },
         ]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'feat(api): improve config-driven reviewer matching' } }]);
       }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([

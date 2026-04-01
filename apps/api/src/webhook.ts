@@ -2,6 +2,7 @@ import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
 import {
   fetchPRFiles,
+  fetchPRCommitMessages,
   buildContributorGraph,
   matchReviewers,
   postPRComment,
@@ -16,20 +17,22 @@ import {
   trackEvent,
   createRequestId,
   GitHubRateLimitError,
+  getLatestRateLimitStatus,
   generateContextBrief,
   resolveInstallationToken,
   findExistingComment,
   updatePRComment,
+  formatReviewerComment,
   formatSlackMessage,
   sendSlackNotification,
-  PULLMATCH_MARKER,
   buildExpertiseMap,
-  formatExpertiseTag,
   recordReviewOutcome,
   type StatsCollector,
 } from '@pullmatch/shared';
-import type { ContextBrief, ExpertiseMap, TokenResolverConfig, ReviewAction } from '@pullmatch/shared';
+import type { ExpertiseMap, TokenResolverConfig, ReviewAction } from '@pullmatch/shared';
+import type { ContextBrief, ContributorEntry } from '@pullmatch/shared';
 import { logger } from './logger.ts';
+import { recordWebhookReceived, recordError } from './observability.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -119,7 +122,18 @@ async function runAnalysisPipeline(
   }
 
   // 4. Build contributor graph from commit history for changed files
-  const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  const degradationNotes: string[] = [];
+  let graph = new Map<string, ContributorEntry>();
+  try {
+    graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  } catch (err) {
+    degradationNotes.push('Contributor graph could not be fully built; using limited PR metadata only.');
+    logger.warn('Contributor graph build failed', {
+      pr: event.prNumber,
+      repo: event.repo,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // 5. Optionally fetch review load data for load balancing
   const matcherOpts = matcherOptionsFromConfig(config.reviewers);
@@ -133,32 +147,57 @@ async function runAnalysisPipeline(
   }
 
   // 6. Match top reviewers (excluding PR author, applying config)
-  const recommendations = matchReviewers(graph, event.author, matcherOpts);
-
+  const recommendations = graph.size > 0 ? matchReviewers(graph, event.author, matcherOpts) : [];
   if (recommendations.length === 0) {
     logger.info('No reviewer candidates found', { pr: event.prNumber });
-    trackEvent({
-      name: 'analysis_skipped',
-      requestId: event.deliveryId,
-      properties: {
-        reason: 'no_reviewer_candidates',
-        repo: event.repo,
-        pr_number: event.prNumber,
-      },
-    }, statsCollector);
-    return;
+    degradationNotes.push('No reviewer candidates were found from commit history at this time.');
   }
 
   // 7. Build expertise map from contributor graph
-  const expertiseMap = buildExpertiseMap(graph, filenames);
+  const expertiseMap: ExpertiseMap = graph.size > 0 ? buildExpertiseMap(graph, filenames) : {};
 
   // 8. Generate context briefs for each reviewer
-  const commitMessages: string[] = [];
-  const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
-  const briefs = new Map<string, ContextBrief>(generatedBriefs.map((brief) => [brief.reviewer, brief]));
+  let commitMessages: string[] = [];
+  try {
+    commitMessages = await fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
+  } catch (err) {
+    degradationNotes.push('Context brief inputs were partially unavailable; suggestions are shown without commit intent details.');
+    logger.warn('Commit message fetch failed', {
+      pr: event.prNumber,
+      repo: event.repo,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  let briefs = new Map<string, ContextBrief>();
+  try {
+    const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
+    briefs = new Map(generatedBriefs.map((brief) => [brief.reviewer, brief]));
+  } catch (err) {
+    degradationNotes.push('Context brief generation failed; reviewer suggestions are shown without briefs.');
+    logger.warn('Context brief generation failed', {
+      pr: event.prNumber,
+      repo: event.repo,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const footerNotes: string[] = [];
+  const rateLimit = getLatestRateLimitStatus();
+  if (rateLimit?.isLow) {
+    const resetText = rateLimit.resetAt ? `, resets at ${rateLimit.resetAt.toISOString()}` : '';
+    footerNotes.push(`GitHub API rate limit is low: ${rateLimit.remaining ?? 'unknown'}/${rateLimit.limit ?? 'unknown'} remaining${resetText}.`);
+  }
 
   // 9. Format comment and create or update (dedup on synchronize)
-  const comment = formatReviewerComment(event, recommendations, briefs, expertiseMap);
+  const comment = formatReviewerComment({
+    title: event.title,
+    recommendations,
+    briefs,
+    expertiseMap,
+    degradationNotes,
+    footerNotes,
+  });
   const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
 
   if (existingCommentId) {
@@ -184,12 +223,14 @@ async function runAnalysisPipeline(
       .slice(0, config.reviewers.autoAssignCount)
       .map((r) => r.login);
 
-    const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
-    logger.info('Auto-requested reviewers', {
-      pr: event.prNumber,
-      requested: result.requested,
-      failed: result.failed,
-    });
+    if (topLogins.length > 0) {
+      const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
+      logger.info('Auto-requested reviewers', {
+        pr: event.prNumber,
+        requested: result.requested,
+        failed: result.failed,
+      });
+    }
   }
 
   // 10. Optional Slack notifications (fully opt-in)
@@ -236,42 +277,6 @@ async function runAnalysisPipeline(
   }, statsCollector);
 }
 
-function formatReviewerComment(
-  event: ParsedPREvent,
-  recommendations: Array<{ login: string; score: number; reasons: string[] }>,
-  briefs: Map<string, ContextBrief>,
-  expertiseMap?: ExpertiseMap
-): string {
-  const lines: string[] = [
-    PULLMATCH_MARKER,
-    '## PullMatch Reviewer Suggestions',
-    '',
-    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
-    '',
-  ];
-
-  for (const rec of recommendations) {
-    const expertiseTag = expertiseMap ? formatExpertiseTag(rec.login, expertiseMap) : undefined;
-    const header = expertiseTag
-      ? `### @${rec.login} (score: ${rec.score}) — ${expertiseTag}`
-      : `### @${rec.login} (score: ${rec.score})`;
-    lines.push(header);
-    const brief = briefs.get(rec.login);
-    if (brief) {
-      lines.push(brief.brief);
-    }
-    for (const reason of rec.reasons) {
-      lines.push(`- ${reason}`);
-    }
-    lines.push('');
-  }
-
-  lines.push('---');
-  lines.push('_Powered by [PullMatch](https://github.com/pullmatch)_');
-
-  return lines.join('\n');
-}
-
 export function createWebhookRouter(webhookSecret: string, statsCollector?: StatsCollector): Hono {
   const tokenConfig: TokenResolverConfig = {
     appId: process.env.GITHUB_APP_ID ?? '',
@@ -306,6 +311,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     // Resolve token per-event (installation tokens are short-lived and per-org)
     runAnalysisPipeline(parsed, tokenConfig, statsCollector).catch(async (err) => {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      recordError(errorMessage);
       logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
       trackEvent({
         name: 'analysis_error',
@@ -323,7 +329,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
         if (token) {
           const isRateLimit = err instanceof GitHubRateLimitError;
           const errorComment = isRateLimit
-            ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
+            ? `⚠️ PullMatch was rate-limited by the GitHub API and paused analysis. Next safe retry is after ${err.resetAt.toISOString()}.`
             : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
           await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
         }
@@ -447,6 +453,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     }
 
     logger.info('Webhook received', { event: eventName, deliveryId, requestId });
+    recordWebhookReceived();
 
     const rawBody = await c.req.text();
 

@@ -159,6 +159,9 @@ describe('createWebhookRouter', () => {
       if (url.includes('/pulls/42/files')) {
         return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
       }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): improve matching determinism' } }]);
+      }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
@@ -195,6 +198,7 @@ describe('createWebhookRouter', () => {
     assert.ok(commentBody!.includes(PULLMATCH_MARKER), 'comment should contain HTML marker');
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
+    assert.ok(commentBody!.includes('> **Context:**'));
     assert.ok(commentBody!.includes('_Powered by [PullMatch](https://github.com/pullmatch)_'));
     assert.ok(response.headers.get('x-pullmatch-request-id'));
   });
@@ -251,6 +255,9 @@ describe('createWebhookRouter', () => {
       if (url.includes('/pulls/42/files')) {
         return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
       }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'feat(api): improve reviewer signal selection' } }]);
+      }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
@@ -293,6 +300,7 @@ describe('createWebhookRouter', () => {
     await waitFor(() => updatedBody !== null);
     assert.ok(updatedBody!.includes(PULLMATCH_MARKER), 'updated comment should contain marker');
     assert.ok(updatedBody!.includes('## PullMatch Reviewer Suggestions'));
+    assert.ok(updatedBody!.includes('> **Context:**'));
     assert.equal(createdComment, false, 'should not create a new comment when one exists');
   });
 });

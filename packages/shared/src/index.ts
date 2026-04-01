@@ -20,13 +20,14 @@ export interface ContextBrief {
   brief: string;
 }
 
-export { fetchPRFiles, fetchRecentCommitters, postPRComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, PULLMATCH_MARKER } from './github.ts';
-export type { PRFile, Committer, RequestReviewersResult } from './github.ts';
+export { fetchPRFiles, fetchPRCommitMessages, fetchRecentCommitters, postPRComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, getLatestRateLimitStatus, PULLMATCH_MARKER } from './github.ts';
+export type { PRFile, Committer, RequestReviewersResult, GitHubRateLimitStatus } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
 export { matchReviewers, matcherOptionsFromConfig } from './matcher.ts';
 export type { MatcherOptions } from './matcher.ts';
 export { generateContextBrief } from './context-brief.ts';
+export { formatReviewerComment } from './formatter.ts';
 export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners } from './teams.ts';
 export type { TeamMember, TeamResolutionResult } from './teams.ts';
 export { resolveInstallationToken, clearTokenCache, getTokenCacheSize } from './github-app-auth.ts';
