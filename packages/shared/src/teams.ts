@@ -75,7 +75,7 @@ export function parseCodeownersTeams(
  * Check if a file matches a CODEOWNERS pattern.
  * Supports basic glob patterns used in CODEOWNERS files.
  */
-function matchesCodeownersPattern(file: string, pattern: string): boolean {
+export function matchesCodeownersPattern(file: string, pattern: string): boolean {
   // Exact match
   if (file === pattern) return true;
 
@@ -215,4 +215,66 @@ export async function fetchCodeowners(
     }
   }
   return null;
+}
+
+/**
+ * Parse CODEOWNERS content and extract individual user entries (e.g. @username).
+ * Returns array of { pattern, login } for each individual user rule.
+ */
+export function parseCodeownersIndividuals(
+  codeownersContent: string
+): Array<{ pattern: string; login: string }> {
+  const results: Array<{ pattern: string; login: string }> = [];
+  for (const line of codeownersContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2) continue;
+    const pattern = parts[0];
+
+    for (let i = 1; i < parts.length; i++) {
+      const owner = parts[i];
+      // Match @username (not @org/team)
+      const match = owner.match(/^@([^/]+)$/);
+      if (match) {
+        results.push({ pattern, login: match[1] });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Annotate a contributor graph with CODEOWNERS data.
+ * Sets isCodeOwner and codeOwnerFiles on entries whose login matches
+ * an individual CODEOWNERS rule for any of the changed files.
+ */
+export function annotateCodeowners(
+  graph: Map<string, import('./contributor-graph.ts').ContributorEntry>,
+  codeownersContent: string,
+  changedFiles: string[]
+): void {
+  const individuals = parseCodeownersIndividuals(codeownersContent);
+  if (individuals.length === 0) return;
+
+  // Build a map of login -> count of owned changed files
+  const ownershipCount = new Map<string, number>();
+
+  for (const { pattern, login } of individuals) {
+    for (const file of changedFiles) {
+      if (matchesCodeownersPattern(file, pattern)) {
+        ownershipCount.set(login, (ownershipCount.get(login) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Annotate graph entries
+  for (const [login, fileCount] of ownershipCount) {
+    const entry = graph.get(login);
+    if (entry) {
+      entry.isCodeOwner = true;
+      entry.codeOwnerFiles = fileCount;
+    }
+  }
 }

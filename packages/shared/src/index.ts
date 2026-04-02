@@ -28,7 +28,7 @@ export { matchReviewers, matcherOptionsFromConfig } from './matcher.ts';
 export type { MatcherOptions } from './matcher.ts';
 export { generateContextBrief } from './context-brief.ts';
 export { formatReviewerComment } from './formatter.ts';
-export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners } from './teams.ts';
+export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners, parseCodeownersIndividuals, annotateCodeowners } from './teams.ts';
 export type { TeamMember, TeamResolutionResult } from './teams.ts';
 export { resolveInstallationToken, clearTokenCache, getTokenCacheSize } from './github-app-auth.ts';
 export type { TokenResolverConfig } from './github-app-auth.ts';

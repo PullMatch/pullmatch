@@ -32,6 +32,7 @@ export interface NotificationsConfig {
 export interface RepoConfig {
   reviewers: ReviewerConfig;
   ignore: string[];
+  contextBriefs: boolean;
   notifications: NotificationsConfig;
 }
 
@@ -51,6 +52,7 @@ export const DEFAULT_CONFIG: RepoConfig = {
     maxOpenReviews: 5,
   },
   ignore: [],
+  contextBriefs: true,
   notifications: {},
 };
 
@@ -86,9 +88,10 @@ export function parseRepoConfig(raw: string): RepoConfig {
   };
 
   const ignore = validStringArray(doc.ignore, DEFAULT_CONFIG.ignore);
+  const contextBriefs = validBool(doc.contextBriefs, DEFAULT_CONFIG.contextBriefs);
   const notifications = validNotifications(doc.notifications as Record<string, unknown> | undefined);
 
-  return { reviewers, ignore, notifications };
+  return { reviewers, ignore, contextBriefs, notifications };
 }
 
 /**

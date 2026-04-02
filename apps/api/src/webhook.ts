@@ -11,6 +11,9 @@ import {
   loadRepoConfig,
   filterIgnoredFiles,
   matcherOptionsFromConfig,
+  fetchCodeowners,
+  annotateCodeowners,
+  resolveTeamOwnership,
   parseInstallationEvent,
   parseInstallationRepositoriesEvent,
   formatInstallationLog,
@@ -29,7 +32,7 @@ import {
   recordReviewOutcome,
   type StatsCollector,
 } from '@pullmatch/shared';
-import type { ExpertiseMap, TokenResolverConfig, ReviewAction } from '@pullmatch/shared';
+import type { ExpertiseMap, TokenResolverConfig, ReviewAction, TeamResolutionResult } from '@pullmatch/shared';
 import type { ContextBrief, ContributorEntry } from '@pullmatch/shared';
 import { logger } from './logger.ts';
 import { recordWebhookReceived, recordError } from './observability.ts';
@@ -135,8 +138,33 @@ async function runAnalysisPipeline(
     });
   }
 
-  // 5. Optionally fetch review load data for load balancing
+  // 5. Optionally enrich contributor graph with CODEOWNERS data
+  let teamResolution: TeamResolutionResult | undefined;
+  if (config.reviewers.includeCodeowners && graph.size > 0) {
+    try {
+      const codeownersContent = await fetchCodeowners(event.owner, event.repoName, githubToken);
+      if (codeownersContent) {
+        annotateCodeowners(graph, codeownersContent, filenames);
+        teamResolution = await resolveTeamOwnership(event.owner, codeownersContent, filenames, githubToken);
+        if (teamResolution.teamOwnerLogins.size > 0) {
+          logger.info('Team ownership resolved', { pr: event.prNumber, teamOwners: teamResolution.teamOwnerLogins.size });
+        }
+      }
+    } catch (err) {
+      degradationNotes.push('CODEOWNERS data could not be loaded; scoring proceeds without code ownership signals.');
+      logger.warn('CODEOWNERS fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 6. Optionally fetch review load data for load balancing
   const matcherOpts = matcherOptionsFromConfig(config.reviewers);
+  if (teamResolution) {
+    matcherOpts.teamResolution = teamResolution;
+  }
   if (config.reviewers.loadBalancing) {
     const candidateLogins = Array.from(graph.keys()).filter((l) => l !== event.author);
     if (candidateLogins.length > 0) {
@@ -156,30 +184,33 @@ async function runAnalysisPipeline(
   // 7. Build expertise map from contributor graph
   const expertiseMap: ExpertiseMap = graph.size > 0 ? buildExpertiseMap(graph, filenames) : {};
 
-  // 8. Generate context briefs for each reviewer
+  // 8. Generate context briefs for each reviewer (if enabled)
   let commitMessages: string[] = [];
-  try {
-    commitMessages = await fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
-  } catch (err) {
-    degradationNotes.push('Context brief inputs were partially unavailable; suggestions are shown without commit intent details.');
-    logger.warn('Commit message fetch failed', {
-      pr: event.prNumber,
-      repo: event.repo,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
   let briefs = new Map<string, ContextBrief>();
-  try {
-    const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
-    briefs = new Map(generatedBriefs.map((brief) => [brief.reviewer, brief]));
-  } catch (err) {
-    degradationNotes.push('Context brief generation failed; reviewer suggestions are shown without briefs.');
-    logger.warn('Context brief generation failed', {
-      pr: event.prNumber,
-      repo: event.repo,
-      error: err instanceof Error ? err.message : String(err),
-    });
+
+  if (config.contextBriefs) {
+    try {
+      commitMessages = await fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
+    } catch (err) {
+      degradationNotes.push('Context brief inputs were partially unavailable; suggestions are shown without commit intent details.');
+      logger.warn('Commit message fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
+      briefs = new Map(generatedBriefs.map((brief) => [brief.reviewer, brief]));
+    } catch (err) {
+      degradationNotes.push('Context brief generation failed; reviewer suggestions are shown without briefs.');
+      logger.warn('Context brief generation failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const footerNotes: string[] = [];

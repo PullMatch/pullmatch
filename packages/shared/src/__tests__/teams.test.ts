@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCodeownersTeams } from '../teams.ts';
+import { parseCodeownersTeams, parseCodeownersIndividuals, annotateCodeowners } from '../teams.ts';
 import { matchReviewers } from '../matcher.ts';
 import type { ContributorEntry } from '../contributor-graph.ts';
 import type { TeamResolutionResult } from '../teams.ts';
@@ -52,6 +52,67 @@ describe('parseCodeownersTeams', () => {
   it('skips individual owners (no org prefix)', () => {
     const content = '/src/ @just-a-user';
     assert.deepEqual(parseCodeownersTeams(content), []);
+  });
+});
+
+describe('parseCodeownersIndividuals', () => {
+  it('extracts individual user entries from CODEOWNERS', () => {
+    const content = [
+      '*.ts @alice @acme/ts-team',
+      '/docs/ @bob',
+      '# comment',
+      '',
+      '*.md @charlie',
+    ].join('\n');
+
+    const individuals = parseCodeownersIndividuals(content);
+    assert.equal(individuals.length, 3);
+    assert.deepEqual(individuals[0], { pattern: '*.ts', login: 'alice' });
+    assert.deepEqual(individuals[1], { pattern: '/docs/', login: 'bob' });
+    assert.deepEqual(individuals[2], { pattern: '*.md', login: 'charlie' });
+  });
+
+  it('skips team entries', () => {
+    const content = '/src/ @acme/frontend-team';
+    assert.deepEqual(parseCodeownersIndividuals(content), []);
+  });
+});
+
+describe('annotateCodeowners', () => {
+  it('sets isCodeOwner and codeOwnerFiles on matching graph entries', () => {
+    const graph = makeGraph([
+      entry({ login: 'alice', exactCommits: 2, dirCommits: 0, latestCommit: recentDate }),
+      entry({ login: 'bob', exactCommits: 1, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+
+    const codeowners = '*.ts @alice\n/docs/ @bob\n';
+    annotateCodeowners(graph, codeowners, ['src/main.ts', 'src/utils.ts']);
+
+    const alice = graph.get('alice')!;
+    assert.equal(alice.isCodeOwner, true);
+    assert.equal(alice.codeOwnerFiles, 2); // both .ts files match
+
+    const bob = graph.get('bob')!;
+    // No docs/ files in changedFiles, so bob should not be a code owner
+    assert.notEqual(bob.isCodeOwner, true);
+  });
+
+  it('does nothing when no individual owners in CODEOWNERS', () => {
+    const graph = makeGraph([
+      entry({ login: 'alice', exactCommits: 1, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+
+    annotateCodeowners(graph, '/src/ @acme/team\n', ['src/main.ts']);
+    assert.notEqual(graph.get('alice')!.isCodeOwner, true);
+  });
+
+  it('handles empty CODEOWNERS content', () => {
+    const graph = makeGraph([
+      entry({ login: 'alice', exactCommits: 1, dirCommits: 0, latestCommit: recentDate }),
+    ]);
+
+    annotateCodeowners(graph, '', ['src/main.ts']);
+    assert.notEqual(graph.get('alice')!.isCodeOwner, true);
   });
 });
 
