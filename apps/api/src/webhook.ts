@@ -30,6 +30,7 @@ import {
   sendSlackNotification,
   buildExpertiseMap,
   recordReviewOutcome,
+  postWelcomeComment as postWelcomeRepoComment,
   type StatsCollector,
 } from '@pullmatch/shared';
 import type { ExpertiseMap, TokenResolverConfig, ReviewAction, TeamResolutionResult } from '@pullmatch/shared';
@@ -54,6 +55,64 @@ export interface ParsedPREvent {
   installationId?: number;
 }
 
+const installationIdByRepo = new Map<string, number>();
+const pendingWelcomeCommentRepos = new Set<string>();
+const welcomedRepos = new Set<string>();
+
+function normalizeRepoKey(repoFullName: string): string {
+  return repoFullName.toLowerCase();
+}
+
+function rememberInstallationForRepos(installationId: number | null, repos: string[], queueWelcomeComment: boolean): void {
+  if (!installationId) {
+    return;
+  }
+
+  for (const repo of repos) {
+    const repoKey = normalizeRepoKey(repo);
+    installationIdByRepo.set(repoKey, installationId);
+    if (queueWelcomeComment) {
+      pendingWelcomeCommentRepos.add(repoKey);
+    }
+  }
+}
+
+function forgetInstallationForRepos(repos: string[]): void {
+  for (const repo of repos) {
+    const repoKey = normalizeRepoKey(repo);
+    installationIdByRepo.delete(repoKey);
+    pendingWelcomeCommentRepos.delete(repoKey);
+    welcomedRepos.delete(repoKey);
+  }
+}
+
+function resolveInstallationId(installationId: number | undefined, repoFullName: string): number | undefined {
+  if (installationId) {
+    return installationId;
+  }
+  return installationIdByRepo.get(normalizeRepoKey(repoFullName));
+}
+
+function shouldPostWelcomeComment(action: ParsedPREvent['action'], repoFullName: string): boolean {
+  if (action !== 'opened') {
+    return false;
+  }
+  const repoKey = normalizeRepoKey(repoFullName);
+  return pendingWelcomeCommentRepos.has(repoKey) && !welcomedRepos.has(repoKey);
+}
+
+function markWelcomeCommentPosted(repoFullName: string): void {
+  const repoKey = normalizeRepoKey(repoFullName);
+  welcomedRepos.add(repoKey);
+  pendingWelcomeCommentRepos.delete(repoKey);
+}
+
+export function resetWebhookStateForTests(): void {
+  installationIdByRepo.clear();
+  pendingWelcomeCommentRepos.clear();
+  welcomedRepos.clear();
+}
+
 async function runAnalysisPipeline(
   event: ParsedPREvent,
   tokenConfig: TokenResolverConfig,
@@ -70,7 +129,33 @@ async function runAnalysisPipeline(
     },
   }, statsCollector);
 
-  const githubToken = await resolveInstallationToken(event.installationId, tokenConfig);
+  const resolvedInstallationId = resolveInstallationId(event.installationId, event.repo);
+  rememberInstallationForRepos(resolvedInstallationId ?? null, [event.repo], false);
+
+  if (shouldPostWelcomeComment(event.action, event.repo)) {
+    try {
+      await postWelcomeRepoComment(resolvedInstallationId, event.repo, event.prNumber, tokenConfig);
+      markWelcomeCommentPosted(event.repo);
+      logger.info('Posted onboarding welcome comment', { pr: event.prNumber, repo: event.repo });
+      trackEvent({
+        name: 'comment_posted',
+        requestId: event.deliveryId,
+        properties: {
+          repo: event.repo,
+          pr_number: event.prNumber,
+          mode: 'onboarding_welcome',
+        },
+      }, statsCollector);
+    } catch (err) {
+      logger.warn('Failed to post onboarding welcome comment', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const githubToken = await resolveInstallationToken(resolvedInstallationId, tokenConfig);
   if (!githubToken) {
     logger.warn('No GitHub token available — skipping reviewer analysis');
     trackEvent({
@@ -376,8 +461,16 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
       return;
     }
 
+    if (parsed.action === 'created') {
+      rememberInstallationForRepos(parsed.installationId, parsed.repos, true);
+    } else {
+      forgetInstallationForRepos(parsed.repos);
+    }
+
     logger.info('GitHub App installation event', {
       deliveryId: id,
+      account: parsed.org,
+      repoCount: parsed.repos.length,
       ...formatInstallationLog(parsed),
     });
 
@@ -398,6 +491,12 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     const parsed = parseInstallationRepositoriesEvent(payload);
     if (!parsed) {
       return;
+    }
+
+    if (parsed.action === 'added') {
+      rememberInstallationForRepos(parsed.installationId, parsed.repos, true);
+    } else {
+      forgetInstallationForRepos(parsed.repos);
     }
 
     logger.info('GitHub App installation repositories changed', {

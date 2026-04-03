@@ -20,7 +20,7 @@ export interface ContextBrief {
   brief: string;
 }
 
-export { fetchPRFiles, fetchPRCommitMessages, fetchRecentCommitters, postPRComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, getLatestRateLimitStatus, PULLMATCH_MARKER } from './github.ts';
+export { fetchPRFiles, fetchPRCommitMessages, fetchRecentCommitters, postPRComment, postWelcomeComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, getLatestRateLimitStatus, PULLMATCH_MARKER } from './github.ts';
 export type { PRFile, Committer, RequestReviewersResult, GitHubRateLimitStatus } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';

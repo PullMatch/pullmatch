@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { Webhooks } from '@octokit/webhooks';
 import { PULLMATCH_MARKER } from '@pullmatch/shared';
-import { createWebhookRouter } from '../webhook.ts';
+import { createWebhookRouter, resetWebhookStateForTests } from '../webhook.ts';
 
 type FetchLike = typeof fetch;
 
@@ -11,19 +11,20 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   delete process.env.GITHUB_TOKEN_WRITE;
+  resetWebhookStateForTests();
 });
 
-function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened') {
+function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened', number = 42) {
   return {
     action,
-    number: 42,
+    number,
     pull_request: {
       title: 'Improve reviewer matching',
       user: { login: 'author-user' },
       head: { ref: 'feature/reviewers', sha: 'abc123' },
       base: { ref: 'main' },
       diff_url: 'https://example.test/diff',
-      html_url: 'https://example.test/pull/42',
+      html_url: `https://example.test/pull/${number}`,
     },
     repository: {
       full_name: 'acme/pullmatch',
@@ -248,6 +249,71 @@ describe('createWebhookRouter', () => {
     assert.deepEqual(await response.json(), { ok: true });
     assert.equal(fetchCalls.length, 0);
     assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('posts onboarding welcome comment only once on first PR opened after install', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+
+    const installationResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation',
+      payload: JSON.stringify(makeInstallationPayload('created')),
+    });
+    assert.equal(installationResponse.status, 200);
+
+    const postedBodies: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/pulls/') && url.includes('/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/') && url.includes('/commits')) {
+        return Response.json([{ commit: { message: 'feat: add onboarding comment' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/issues/') && url.includes('/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/') && url.includes('/comments') && init?.method === 'POST') {
+        postedBodies.push((JSON.parse(String(init.body)) as { body: string }).body);
+        return Response.json({ id: postedBodies.length }, { status: 201 });
+      }
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const firstPrResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload: JSON.stringify(makePullRequestPayload('opened', 42)),
+    });
+    assert.equal(firstPrResponse.status, 200);
+    await waitFor(() => postedBodies.some((body) => body.includes('<!-- pullmatch-welcome -->')));
+
+    const welcomesAfterFirstPr = postedBodies.filter((body) => body.includes('<!-- pullmatch-welcome -->')).length;
+    assert.equal(welcomesAfterFirstPr, 1);
+
+    const secondPrResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload: JSON.stringify(makePullRequestPayload('opened', 43)),
+    });
+    assert.equal(secondPrResponse.status, 200);
+
+    await waitFor(() => postedBodies.some((body) => body.includes(PULLMATCH_MARKER)));
+    const totalWelcomes = postedBodies.filter((body) => body.includes('<!-- pullmatch-welcome -->')).length;
+    assert.equal(totalWelcomes, 1, 'welcome comment should be posted exactly once per repo');
   });
 
   it('updates existing comment on synchronize instead of posting a new one', async () => {
