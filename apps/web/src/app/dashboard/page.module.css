@@ -120,6 +120,50 @@
   }
 }
 
+.skeleton {
+  opacity: 0.45;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.2; }
+}
+
+.errorBanner {
+  margin-top: 2rem;
+  padding: 1.2rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.errorBanner p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.errorBanner button {
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.emptyRow {
+  text-align: center;
+  color: var(--muted);
+  padding: 2rem 1rem;
+}
+
 @media (max-width: 768px) {
   .container {
     width: calc(100% - 1.5rem);
