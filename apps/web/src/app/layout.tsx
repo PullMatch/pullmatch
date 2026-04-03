@@ -79,6 +79,9 @@ export default function RootLayout({
                     <a href="/">Home</a>
                   </li>
                   <li>
+                    <a href="/docs">Docs</a>
+                  </li>
+                  <li>
                     <a href="/dashboard">Dashboard</a>
                   </li>
                   <li>
