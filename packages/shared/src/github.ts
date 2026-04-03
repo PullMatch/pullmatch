@@ -1,6 +1,7 @@
 const GITHUB_API = 'https://api.github.com';
 const REQUEST_TIMEOUT_MS = 30_000;
-const RETRY_DELAY_MS = 2_000;
+const MAX_5XX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 500;
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
 function headers(token?: string): Record<string, string> {
@@ -20,20 +21,50 @@ export class GitHubRateLimitError extends Error {
   }
 }
 
-function checkRateLimit(res: Response): void {
-  const remaining = res.headers.get('X-RateLimit-Remaining');
-  const resetHeader = res.headers.get('X-RateLimit-Reset');
+export interface GitHubRateLimitStatus {
+  limit: number | null;
+  remaining: number | null;
+  resetAt: Date | null;
+  isLow: boolean;
+}
 
-  if (remaining !== null) {
-    const remainingNum = parseInt(remaining, 10);
-    if (remainingNum < RATE_LIMIT_WARNING_THRESHOLD) {
-      const resetAt = resetHeader ? new Date(parseInt(resetHeader, 10) * 1000) : null;
-      console.warn(`[github] Rate limit low: ${remainingNum} remaining${resetAt ? `, resets at ${resetAt.toISOString()}` : ''}`);
-    }
+let latestRateLimitStatus: GitHubRateLimitStatus | null = null;
+
+function parseRateLimitStatus(res: Response): GitHubRateLimitStatus | null {
+  const limitHeader = res.headers.get('X-RateLimit-Limit');
+  const remainingHeader = res.headers.get('X-RateLimit-Remaining');
+  const resetHeader = res.headers.get('X-RateLimit-Reset');
+  if (limitHeader === null && remainingHeader === null && resetHeader === null) {
+    return null;
   }
 
-  if (res.status === 403 && remaining === '0') {
-    const resetAt = resetHeader ? new Date(parseInt(resetHeader, 10) * 1000) : new Date();
+  const limit = limitHeader !== null ? Number.parseInt(limitHeader, 10) : null;
+  const remaining = remainingHeader !== null ? Number.parseInt(remainingHeader, 10) : null;
+  const resetAt = resetHeader !== null ? new Date(Number.parseInt(resetHeader, 10) * 1000) : null;
+
+  return {
+    limit: Number.isFinite(limit) ? limit : null,
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    resetAt: resetAt && !Number.isNaN(resetAt.getTime()) ? resetAt : null,
+    isLow: remaining !== null && Number.isFinite(remaining) && remaining < RATE_LIMIT_WARNING_THRESHOLD,
+  };
+}
+
+export function getLatestRateLimitStatus(): GitHubRateLimitStatus | null {
+  return latestRateLimitStatus ? { ...latestRateLimitStatus } : null;
+}
+
+function checkRateLimit(res: Response): void {
+  const status = parseRateLimitStatus(res);
+  if (!status) return;
+
+  latestRateLimitStatus = status;
+  if (status.isLow) {
+    console.warn(`[github] Rate limit low: ${status.remaining ?? 'unknown'} remaining${status.resetAt ? `, resets at ${status.resetAt.toISOString()}` : ''}`);
+  }
+
+  if (res.status === 403 && status.remaining === 0) {
+    const resetAt = status.resetAt ?? new Date();
     throw new GitHubRateLimitError(resetAt);
   }
 }
@@ -49,34 +80,27 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 }
 
 async function githubFetch(url: string, init?: RequestInit): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(url, init);
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error(`GitHub API request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`);
-    }
-    throw err;
-  }
-
-  checkRateLimit(res);
-
-  // Retry once on transient 5xx errors
-  if (res.status >= 500) {
-    console.warn(`[github] Server error ${res.status} for ${url}, retrying in ${RETRY_DELAY_MS}ms`);
-    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  for (let attempt = 0; attempt <= MAX_5XX_RETRIES; attempt += 1) {
+    let res: Response;
     try {
       res = await fetchWithTimeout(url, init);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        throw new Error(`GitHub API request timed out after ${REQUEST_TIMEOUT_MS}ms (retry): ${url}`);
+        throw new Error(`GitHub API request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`);
       }
       throw err;
     }
-    checkRateLimit(res);
-  }
 
-  return res;
+    checkRateLimit(res);
+    if (res.status < 500 || attempt === MAX_5XX_RETRIES) {
+      return res;
+    }
+
+    const delayMs = RETRY_BASE_DELAY_MS * (2 ** attempt);
+    console.warn(`[github] Server error ${res.status} for ${url}, retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_5XX_RETRIES})`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new Error('Unreachable');
 }
 
 export interface PRFile {
@@ -87,6 +111,26 @@ export interface PRFile {
 export interface Committer {
   login: string;
   date: string;
+}
+
+export async function fetchPRCommitMessages(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token?: string
+): Promise<string[]> {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/commits?per_page=100`;
+  console.debug(`[github] GET ${url}`);
+  const res = await githubFetch(url, { headers: headers(token) });
+  if (!res.ok) {
+    console.warn(`[github] fetchPRCommitMessages non-critical error ${res.status} for PR #${prNumber}`);
+    return [];
+  }
+
+  const commits = await res.json() as Array<{ commit?: { message?: string } }>;
+  return commits
+    .map((entry) => entry.commit?.message?.trim())
+    .filter((message): message is string => Boolean(message && message.length > 0));
 }
 
 export async function fetchPRFiles(
@@ -134,7 +178,7 @@ export async function findExistingComment(
   token: string
 ): Promise<number | null> {
   const url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
-  const res = await fetch(url, { headers: headers(token) });
+  const res = await githubFetch(url, { headers: headers(token) });
   if (!res.ok) {
     throw new Error(`GitHub API error ${res.status} listing comments: ${await res.text()}`);
   }
@@ -155,7 +199,7 @@ export async function updatePRComment(
   token: string
 ): Promise<void> {
   const url = `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`;
-  const res = await fetch(url, {
+  const res = await githubFetch(url, {
     method: 'PATCH',
     headers: { ...headers(token), 'Content-Type': 'application/json' },
     body: JSON.stringify({ body }),
@@ -255,7 +299,7 @@ export async function requestReviewers(
   const url = `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/requested_reviewers`;
   console.debug(`[github] POST ${url} reviewers=${logins.join(',')}`);
 
-  const res = await fetch(url, {
+  const res = await githubFetch(url, {
     method: 'POST',
     headers: { ...headers(token), 'Content-Type': 'application/json' },
     body: JSON.stringify({ reviewers: logins }),

@@ -6,7 +6,8 @@ export type AnalyticsEventName =
   | 'comment_posted'
   | 'analysis_skipped'
   | 'analysis_error'
-  | 'installation_event';
+  | 'installation_event'
+  | 'review_completed';
 
 export type AnalyticsValue = string | number | boolean | null | string[];
 

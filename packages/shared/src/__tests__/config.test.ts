@@ -131,6 +131,15 @@ reviewers:
     assert.equal(parseRepoConfig('reviewers:\n  maxOpenReviews: "bad"').reviewers.maxOpenReviews, 5);
   });
 
+  it('parses contextBriefs boolean', () => {
+    assert.equal(parseRepoConfig('contextBriefs: false').contextBriefs, false);
+    assert.equal(parseRepoConfig('contextBriefs: true').contextBriefs, true);
+  });
+
+  it('defaults contextBriefs to true', () => {
+    assert.equal(parseRepoConfig('reviewers:\n  count: 2').contextBriefs, true);
+  });
+
   it('handles partial weights (fills in defaults for missing)', () => {
     const yaml = `
 reviewers:

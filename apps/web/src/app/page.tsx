@@ -10,8 +10,11 @@ export default function Home() {
           PullMatch analyzes your code changes and contributor history to
           recommend the right reviewer — with clear context on what matters most.
         </p>
-        <a href="#waitlist" className={styles.ctaPrimary}>
-          Join the waitlist
+        <a
+          href="https://github.com/apps/pullmatch/installations/new"
+          className={styles.ctaPrimary}
+        >
+          Install on GitHub
         </a>
         <a href="#how-it-works" className={styles.ctaSecondary}>
           See how it works
@@ -86,18 +89,18 @@ export default function Home() {
         </ul>
       </section>
 
-      {/* ── Waitlist CTA ── */}
-      <section className={styles.ctaBanner} id="waitlist">
-        <h2>Get early access</h2>
+      {/* ── Install CTA ── */}
+      <section className={styles.ctaBanner} id="install">
+        <h2>Ready to try PullMatch?</h2>
         <p>
-          PullMatch is in private beta. Join the waitlist and we will reach out
-          when your spot opens up.
+          Install in seconds. No configuration needed — PullMatch starts
+          suggesting reviewers on your very next pull request.
         </p>
         <a
-          href="https://forms.gle/pullmatch-waitlist"
+          href="https://github.com/apps/pullmatch/installations/new"
           className={styles.ctaPrimary}
         >
-          Join the waitlist
+          Install on GitHub
         </a>
       </section>
 

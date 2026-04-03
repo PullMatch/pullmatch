@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { StatsCollector } from '@pullmatch/shared';
 import { createWebhookRouter } from './webhook.ts';
 import { logger } from './logger.ts';
+import { errorMiddleware, getOperationalState, requireStatsAuth } from './observability.ts';
 
 // --- Environment validation ---
 // GITHUB_WEBHOOK_SECRET is always required.
@@ -37,17 +38,39 @@ const app = new Hono();
 const statsCollector = new StatsCollector(20);
 const startedAt = Date.now();
 
+app.onError(errorMiddleware);
+
 app.get('/health', (c) => {
+  const ops = getOperationalState();
   return c.json({
     status: 'ok',
     version: '1.2.0',
     uptime: Math.floor((Date.now() - startedAt) / 1000),
+    lastWebhookAt: ops.lastWebhookAt,
+    totalWebhooksProcessed: ops.totalWebhooksProcessed,
+    lastError: ops.lastError,
     env: {
       hasGithubToken: !!process.env.GITHUB_TOKEN_WRITE,
       hasWebhookSecret: !!process.env.GITHUB_WEBHOOK_SECRET,
       hasAppId: !!process.env.GITHUB_APP_ID,
       hasPrivateKey: !!process.env.GITHUB_APP_PRIVATE_KEY,
     },
+  });
+});
+
+app.get('/stats', (c) => {
+  const denied = requireStatsAuth(c);
+  if (denied) return denied;
+
+  const stats = statsCollector.getStats();
+  const ops = getOperationalState();
+  return c.json({
+    ...stats,
+    error_rate: stats.total_prs_analyzed > 0
+      ? +(ops.totalErrors / stats.total_prs_analyzed).toFixed(4)
+      : 0,
+    total_errors: ops.totalErrors,
+    recent: statsCollector.getRecent(),
   });
 });
 

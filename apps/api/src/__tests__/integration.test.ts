@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { Webhooks } from '@octokit/webhooks';
 import { createWebhookRouter } from '../webhook.ts';
+import { clearReviewStore, getOutcomesForPR, getReviewStats } from '@pullmatch/shared';
 
 type FetchLike = typeof fetch;
 
@@ -14,6 +15,7 @@ afterEach(() => {
   console.log = originalConsoleLog;
   console.error = originalConsoleError;
   delete process.env.GITHUB_TOKEN_WRITE;
+  clearReviewStore();
 });
 
 function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened') {
@@ -130,6 +132,9 @@ describe('webhook integration pipeline', () => {
       if (url.includes('/pulls/42/files')) {
         return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
       }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): guard null reviewer candidate' } }]);
+      }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([
           { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
@@ -168,6 +173,7 @@ describe('webhook integration pipeline', () => {
     await waitFor(() => commentBody !== null);
     assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
     assert.ok(commentBody!.includes('### @alice'));
+    assert.ok(commentBody!.includes('> **Context:**'));
     assert.equal(reviewerRequestCalled, false);
   });
 
@@ -201,6 +207,9 @@ describe('webhook integration pipeline', () => {
           { filename: 'src/matcher.ts', status: 'modified' },
           { filename: 'docs/changelog.md', status: 'modified' },
         ]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'feat(api): improve config-driven reviewer matching' } }]);
       }
       if (url.includes('/commits?path=src%2Fmatcher.ts')) {
         return Response.json([
@@ -340,5 +349,120 @@ describe('webhook integration pipeline', () => {
     assert.equal(timeoutResponse.status, 200);
     await waitFor(() => timeoutCommentBody !== null);
     assert.ok(timeoutCommentBody!.includes('encountered an error analyzing this PR'));
+  });
+});
+
+function makePullRequestReviewPayload(
+  action: 'submitted' | 'dismissed',
+  state: 'approved' | 'changes_requested' | 'commented' = 'approved'
+) {
+  return {
+    action,
+    review: {
+      user: { login: 'reviewer-alice' },
+      state: action === 'dismissed' ? 'dismissed' : state,
+      submitted_at: '2026-03-30T12:00:00Z',
+    },
+    pull_request: {
+      number: 42,
+      title: 'Improve reviewer matching',
+      user: { login: 'author-user' },
+      head: { ref: 'feature/reviewers', sha: 'abc123' },
+      base: { ref: 'main' },
+    },
+    repository: {
+      full_name: 'acme/pullmatch',
+      name: 'pullmatch',
+      owner: { login: 'acme' },
+    },
+  };
+}
+
+describe('pull_request_review webhook', () => {
+  it('records approved review and emits review_completed event', async () => {
+    const analyticsLogs: string[] = [];
+    console.log = ((line?: unknown) => {
+      analyticsLogs.push(String(line));
+    }) as typeof console.log;
+
+    const payload = JSON.stringify(makePullRequestReviewPayload('submitted', 'approved'));
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request_review',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+
+    await waitFor(() => analyticsLogs.some((l) => l.includes('"review_completed"')));
+
+    const outcomes = getOutcomesForPR('acme/pullmatch', 42);
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].reviewer, 'reviewer-alice');
+    assert.equal(outcomes[0].action, 'approved');
+    assert.equal(outcomes[0].timestamp, '2026-03-30T12:00:00Z');
+
+    const event = analyticsLogs
+      .filter((l) => l.includes('"review_completed"'))
+      .map((l) => JSON.parse(l) as { name: string; properties: Record<string, unknown> })[0];
+    assert.equal(event.properties.reviewer, 'reviewer-alice');
+    assert.equal(event.properties.action, 'approved');
+    assert.equal(event.properties.pr_number, 42);
+    assert.equal(event.properties.repo, 'acme/pullmatch');
+  });
+
+  it('records changes_requested review', async () => {
+    console.log = (() => {}) as typeof console.log;
+
+    const payload = JSON.stringify(makePullRequestReviewPayload('submitted', 'changes_requested'));
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request_review',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => getOutcomesForPR('acme/pullmatch', 42).length > 0);
+
+    const outcomes = getOutcomesForPR('acme/pullmatch', 42);
+    assert.equal(outcomes[0].action, 'changes_requested');
+  });
+
+  it('records dismissed review', async () => {
+    console.log = (() => {}) as typeof console.log;
+
+    const payload = JSON.stringify(makePullRequestReviewPayload('dismissed'));
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request_review',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => getOutcomesForPR('acme/pullmatch', 42).length > 0);
+
+    const outcomes = getOutcomesForPR('acme/pullmatch', 42);
+    assert.equal(outcomes[0].action, 'dismissed');
+  });
+
+  it('accumulates stats across multiple reviews', async () => {
+    console.log = (() => {}) as typeof console.log;
+
+    const approved = JSON.stringify(makePullRequestReviewPayload('submitted', 'approved'));
+    const changesRequested = JSON.stringify(makePullRequestReviewPayload('submitted', 'changes_requested'));
+
+    await sendWebhookRequest({ secret: 'test-secret', eventName: 'pull_request_review', payload: approved });
+    await waitFor(() => getOutcomesForPR('acme/pullmatch', 42).length > 0);
+
+    await sendWebhookRequest({ secret: 'test-secret', eventName: 'pull_request_review', payload: changesRequested });
+    await waitFor(() => getOutcomesForPR('acme/pullmatch', 42).length > 1);
+
+    const stats = getReviewStats('acme/pullmatch');
+    const aliceStats = stats.get('reviewer-alice');
+    assert.ok(aliceStats);
+    assert.equal(aliceStats.total, 2);
+    assert.equal(aliceStats.approved, 1);
+    assert.equal(aliceStats.changesRequested, 1);
+    assert.equal(aliceStats.approvalRate, 0.5);
   });
 });

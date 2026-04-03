@@ -2,6 +2,7 @@ import { Webhooks } from '@octokit/webhooks';
 import { Hono } from 'hono';
 import {
   fetchPRFiles,
+  fetchPRCommitMessages,
   buildContributorGraph,
   matchReviewers,
   postPRComment,
@@ -10,25 +11,31 @@ import {
   loadRepoConfig,
   filterIgnoredFiles,
   matcherOptionsFromConfig,
+  fetchCodeowners,
+  annotateCodeowners,
+  resolveTeamOwnership,
   parseInstallationEvent,
   parseInstallationRepositoriesEvent,
   formatInstallationLog,
   trackEvent,
   createRequestId,
   GitHubRateLimitError,
+  getLatestRateLimitStatus,
   generateContextBrief,
   resolveInstallationToken,
   findExistingComment,
   updatePRComment,
+  formatReviewerComment,
   formatSlackMessage,
   sendSlackNotification,
-  PULLMATCH_MARKER,
   buildExpertiseMap,
-  formatExpertiseTag,
+  recordReviewOutcome,
   type StatsCollector,
 } from '@pullmatch/shared';
-import type { ContextBrief, ExpertiseMap, TokenResolverConfig } from '@pullmatch/shared';
+import type { ExpertiseMap, TokenResolverConfig, ReviewAction, TeamResolutionResult } from '@pullmatch/shared';
+import type { ContextBrief, ContributorEntry } from '@pullmatch/shared';
 import { logger } from './logger.ts';
+import { recordWebhookReceived, recordError } from './observability.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -118,10 +125,46 @@ async function runAnalysisPipeline(
   }
 
   // 4. Build contributor graph from commit history for changed files
-  const graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  const degradationNotes: string[] = [];
+  let graph = new Map<string, ContributorEntry>();
+  try {
+    graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  } catch (err) {
+    degradationNotes.push('Contributor graph could not be fully built; using limited PR metadata only.');
+    logger.warn('Contributor graph build failed', {
+      pr: event.prNumber,
+      repo: event.repo,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
-  // 5. Optionally fetch review load data for load balancing
+  // 5. Optionally enrich contributor graph with CODEOWNERS data
+  let teamResolution: TeamResolutionResult | undefined;
+  if (config.reviewers.includeCodeowners && graph.size > 0) {
+    try {
+      const codeownersContent = await fetchCodeowners(event.owner, event.repoName, githubToken);
+      if (codeownersContent) {
+        annotateCodeowners(graph, codeownersContent, filenames);
+        teamResolution = await resolveTeamOwnership(event.owner, codeownersContent, filenames, githubToken);
+        if (teamResolution.teamOwnerLogins.size > 0) {
+          logger.info('Team ownership resolved', { pr: event.prNumber, teamOwners: teamResolution.teamOwnerLogins.size });
+        }
+      }
+    } catch (err) {
+      degradationNotes.push('CODEOWNERS data could not be loaded; scoring proceeds without code ownership signals.');
+      logger.warn('CODEOWNERS fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 6. Optionally fetch review load data for load balancing
   const matcherOpts = matcherOptionsFromConfig(config.reviewers);
+  if (teamResolution) {
+    matcherOpts.teamResolution = teamResolution;
+  }
   if (config.reviewers.loadBalancing) {
     const candidateLogins = Array.from(graph.keys()).filter((l) => l !== event.author);
     if (candidateLogins.length > 0) {
@@ -132,37 +175,60 @@ async function runAnalysisPipeline(
   }
 
   // 6. Match top reviewers (excluding PR author, applying config)
-  const recommendations = matchReviewers(graph, event.author, matcherOpts);
-
+  const recommendations = graph.size > 0 ? matchReviewers(graph, event.author, matcherOpts) : [];
   if (recommendations.length === 0) {
     logger.info('No reviewer candidates found', { pr: event.prNumber });
-    trackEvent({
-      name: 'analysis_skipped',
-      requestId: event.deliveryId,
-      properties: {
-        reason: 'no_reviewer_candidates',
-        repo: event.repo,
-        pr_number: event.prNumber,
-      },
-    }, statsCollector);
-    return;
+    degradationNotes.push('No reviewer candidates were found from commit history at this time.');
   }
 
   // 7. Build expertise map from contributor graph
-  const expertiseMap = buildExpertiseMap(graph, filenames);
+  const expertiseMap: ExpertiseMap = graph.size > 0 ? buildExpertiseMap(graph, filenames) : {};
 
-  // 8. Generate context briefs for each reviewer
-  const briefs = new Map<string, ContextBrief>();
-  for (const rec of recommendations) {
-    briefs.set(rec.login, generateContextBrief(
-      { title: event.title, branch: event.branch, filesChanged: filenames },
-      rec.login,
-      graph
-    ));
+  // 8. Generate context briefs for each reviewer (if enabled)
+  let commitMessages: string[] = [];
+  let briefs = new Map<string, ContextBrief>();
+
+  if (config.contextBriefs) {
+    try {
+      commitMessages = await fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
+    } catch (err) {
+      degradationNotes.push('Context brief inputs were partially unavailable; suggestions are shown without commit intent details.');
+      logger.warn('Commit message fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
+      briefs = new Map(generatedBriefs.map((brief) => [brief.reviewer, brief]));
+    } catch (err) {
+      degradationNotes.push('Context brief generation failed; reviewer suggestions are shown without briefs.');
+      logger.warn('Context brief generation failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const footerNotes: string[] = [];
+  const rateLimit = getLatestRateLimitStatus();
+  if (rateLimit?.isLow) {
+    const resetText = rateLimit.resetAt ? `, resets at ${rateLimit.resetAt.toISOString()}` : '';
+    footerNotes.push(`GitHub API rate limit is low: ${rateLimit.remaining ?? 'unknown'}/${rateLimit.limit ?? 'unknown'} remaining${resetText}.`);
   }
 
   // 9. Format comment and create or update (dedup on synchronize)
-  const comment = formatReviewerComment(event, recommendations, briefs, expertiseMap);
+  const comment = formatReviewerComment({
+    title: event.title,
+    recommendations,
+    briefs,
+    expertiseMap,
+    degradationNotes,
+    footerNotes,
+  });
   const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
 
   if (existingCommentId) {
@@ -188,12 +254,14 @@ async function runAnalysisPipeline(
       .slice(0, config.reviewers.autoAssignCount)
       .map((r) => r.login);
 
-    const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
-    logger.info('Auto-requested reviewers', {
-      pr: event.prNumber,
-      requested: result.requested,
-      failed: result.failed,
-    });
+    if (topLogins.length > 0) {
+      const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
+      logger.info('Auto-requested reviewers', {
+        pr: event.prNumber,
+        requested: result.requested,
+        failed: result.failed,
+      });
+    }
   }
 
   // 10. Optional Slack notifications (fully opt-in)
@@ -240,42 +308,6 @@ async function runAnalysisPipeline(
   }, statsCollector);
 }
 
-function formatReviewerComment(
-  event: ParsedPREvent,
-  recommendations: Array<{ login: string; score: number; reasons: string[] }>,
-  briefs: Map<string, ContextBrief>,
-  expertiseMap?: ExpertiseMap
-): string {
-  const lines: string[] = [
-    PULLMATCH_MARKER,
-    '## PullMatch Reviewer Suggestions',
-    '',
-    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership and recent activity.`,
-    '',
-  ];
-
-  for (const rec of recommendations) {
-    const expertiseTag = expertiseMap ? formatExpertiseTag(rec.login, expertiseMap) : undefined;
-    const header = expertiseTag
-      ? `### @${rec.login} (score: ${rec.score}) — ${expertiseTag}`
-      : `### @${rec.login} (score: ${rec.score})`;
-    lines.push(header);
-    const brief = briefs.get(rec.login);
-    if (brief && brief.focusAreas.length > 0) {
-      lines.push(`**Focus areas:** ${brief.focusAreas.join(', ')}`);
-    }
-    for (const reason of rec.reasons) {
-      lines.push(`- ${reason}`);
-    }
-    lines.push('');
-  }
-
-  lines.push('---');
-  lines.push('_Powered by [PullMatch](https://github.com/pullmatch)_');
-
-  return lines.join('\n');
-}
-
 export function createWebhookRouter(webhookSecret: string, statsCollector?: StatsCollector): Hono {
   const tokenConfig: TokenResolverConfig = {
     appId: process.env.GITHUB_APP_ID ?? '',
@@ -310,6 +342,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     // Resolve token per-event (installation tokens are short-lived and per-org)
     runAnalysisPipeline(parsed, tokenConfig, statsCollector).catch(async (err) => {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      recordError(errorMessage);
       logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
       trackEvent({
         name: 'analysis_error',
@@ -327,7 +360,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
         if (token) {
           const isRateLimit = err instanceof GitHubRateLimitError;
           const errorComment = isRateLimit
-            ? '⚠️ PullMatch was rate-limited by the GitHub API and could not analyze this PR. We will retry on the next push.'
+            ? `⚠️ PullMatch was rate-limited by the GitHub API and paused analysis. Next safe retry is after ${err.resetAt.toISOString()}.`
             : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
           await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
         }
@@ -385,6 +418,54 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     }, statsCollector);
   });
 
+  webhooks.on(['pull_request_review.submitted', 'pull_request_review.dismissed'], ({ id, payload }) => {
+    const review = payload.review;
+    const pr = payload.pull_request;
+    const repo = payload.repository;
+    const reviewer = review.user?.login ?? 'unknown';
+    const repoFullName = repo.full_name;
+    const prNumber = pr.number;
+
+    // Map GitHub review state to our action type
+    let action: ReviewAction;
+    if (payload.action === 'dismissed') {
+      action = 'dismissed';
+    } else {
+      // submitted event — review.state is 'approved', 'changes_requested', or 'commented'
+      const state = review.state?.toLowerCase();
+      if (state === 'approved') {
+        action = 'approved';
+      } else if (state === 'changes_requested') {
+        action = 'changes_requested';
+      } else {
+        action = 'commented';
+      }
+    }
+
+    const timestamp = review.submitted_at ?? new Date().toISOString();
+
+    recordReviewOutcome(repoFullName, prNumber, reviewer, action, timestamp);
+
+    logger.info('Review outcome recorded', {
+      deliveryId: id,
+      repo: repoFullName,
+      pr: prNumber,
+      reviewer,
+      action,
+    });
+
+    trackEvent({
+      name: 'review_completed',
+      requestId: id,
+      properties: {
+        repo: repoFullName,
+        pr_number: prNumber,
+        reviewer,
+        action,
+      },
+    }, statsCollector);
+  });
+
   const router = new Hono();
 
   router.post('/webhook', async (c) => {
@@ -403,6 +484,7 @@ export function createWebhookRouter(webhookSecret: string, statsCollector?: Stat
     }
 
     logger.info('Webhook received', { event: eventName, deliveryId, requestId });
+    recordWebhookReceived();
 
     const rawBody = await c.req.text();
 

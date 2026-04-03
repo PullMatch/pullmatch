@@ -69,9 +69,13 @@ export async function buildContributorGraph(
   // Phase 1: exact file commits
   await Promise.all(
     files.map(async (filename) => {
-      const committers = await fetchRecentCommitters(owner, repo, filename, token);
-      for (const { login, date } of committers) {
-        upsert(login, date, true);
+      try {
+        const committers = await fetchRecentCommitters(owner, repo, filename, token);
+        for (const { login, date } of committers) {
+          upsert(login, date, true);
+        }
+      } catch (err) {
+        console.warn(`[graph] Failed to fetch committers for file ${filename}: ${err instanceof Error ? err.message : String(err)}`);
       }
     })
   );
@@ -80,9 +84,13 @@ export async function buildContributorGraph(
   const dirs = uniqueDirs(files);
   await Promise.all(
     dirs.map(async (dir) => {
-      const committers = await fetchRecentCommitters(owner, repo, dir, token);
-      for (const { login, date } of committers) {
-        upsert(login, date, false);
+      try {
+        const committers = await fetchRecentCommitters(owner, repo, dir, token);
+        for (const { login, date } of committers) {
+          upsert(login, date, false);
+        }
+      } catch (err) {
+        console.warn(`[graph] Failed to fetch committers for directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
       }
     })
   );

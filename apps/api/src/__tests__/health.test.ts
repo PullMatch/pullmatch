@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { Hono } from 'hono';
+import { getOperationalState } from '../observability.ts';
 
 // Build a minimal app that mirrors the health route from index.ts
 // We test the route handler logic directly rather than importing index.ts
@@ -11,10 +12,14 @@ function createHealthApp() {
   const startedAt = Date.now();
 
   app.get('/health', (c) => {
+    const ops = getOperationalState();
     return c.json({
       status: 'ok',
       version: '1.2.0',
       uptime: Math.floor((Date.now() - startedAt) / 1000),
+      lastWebhookAt: ops.lastWebhookAt,
+      totalWebhooksProcessed: ops.totalWebhooksProcessed,
+      lastError: ops.lastError,
       env: {
         hasGithubToken: !!process.env.GITHUB_TOKEN_WRITE,
         hasWebhookSecret: !!process.env.GITHUB_WEBHOOK_SECRET,
@@ -57,6 +62,9 @@ describe('/health endpoint', () => {
       status: string;
       version: string;
       uptime: number;
+      totalWebhooksProcessed: number;
+      lastWebhookAt: string | null;
+      lastError: { message: string; timestamp: string } | null;
       env: Record<string, boolean>;
     };
 
@@ -64,6 +72,9 @@ describe('/health endpoint', () => {
     assert.equal(body.version, '1.2.0');
     assert.equal(typeof body.uptime, 'number');
     assert.ok(body.uptime >= 0);
+    assert.equal(typeof body.totalWebhooksProcessed, 'number');
+    assert.ok('lastWebhookAt' in body);
+    assert.ok('lastError' in body);
 
     assert.equal(body.env.hasGithubToken, false);
     assert.equal(body.env.hasWebhookSecret, true);
