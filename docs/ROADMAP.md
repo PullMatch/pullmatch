@@ -1,8 +1,8 @@
 # PullMatch Roadmap
 
-Last updated: 2026-03-31
+Last updated: 2026-04-03
 
-## Phase 1: Get Live
+## Phase 1: Get Live (COMPLETE)
 
 Goal: A working GitHub App that real teams can install and use.
 
@@ -10,27 +10,29 @@ Goal: A working GitHub App that real teams can install and use.
 - [x] GitHub webhook handler (signature verification, PR event parsing)
 - [x] PR comment posting (formatted Markdown with reviewer recommendations)
 - [x] CI pipeline (typecheck on push/PR)
-- [x] Deploy API server to Fly.io (pullmatch-api-prod)
-- [x] GitHub App registered (pullmatch-bot)
+- [x] Deploy API server (Railway: pullmatch-production.up.railway.app)
+- [x] GitHub App registered (pullmatch-bot, App ID 137517)
 - [x] CODEOWNERS matching, team-aware suggestions, load balancing
 - [x] Slack notifications (opt-in via .pullmatch.yml)
 - [x] Stats API endpoints and telemetry
 - [x] /health endpoint with diagnostics
-- [ ] Set Fly.io secrets (PUL-55 — blocked, needs board action)
-- [ ] Validate end-to-end in production (PUL-26 — blocked on secrets)
+- [x] Production secrets configured (Railway env vars)
+- [x] Webhook URL pointed to live deployment
 
-## Phase 2: PR Context Brief (current)
+## Phase 2: PR Context Brief (COMPLETE)
 
 Goal: Give reviewers context alongside assignments — what changed, why it matters, what to look for.
 
-- [ ] Context brief generator: per-reviewer summaries from commit messages + expertise (PUL-58)
-- [ ] Integrate briefs into PR comment formatting (PUL-59)
-- [ ] Track review outcomes via pull_request_review webhook (PUL-60)
+- [x] Context brief generator: per-reviewer summaries from commit messages + expertise (PUL-58)
+- [x] Integrate briefs into PR comment formatting (PUL-59)
+- [x] Track review outcomes via pull_request_review webhook (PUL-60)
 
-## Phase 3: First Users
+## Phase 3: First Users (current)
 
 Goal: Get 3-5 teams using PullMatch on real repos.
 
+- [ ] Post-deploy E2E verification (PUL-77)
+- [ ] Install callback + onboarding welcome comment (PUL-78)
 - [ ] Outreach to teams with active open-source repos
 - [ ] Collect feedback on match quality and usefulness
 - [ ] Iterate on scoring weights based on real-world signal
