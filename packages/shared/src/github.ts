@@ -1,3 +1,5 @@
+import { resolveInstallationToken, type TokenResolverConfig } from './github-app-auth.ts';
+
 const GITHUB_API = 'https://api.github.com';
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_5XX_RETRIES = 3;
@@ -169,6 +171,42 @@ export async function postPRComment(
   if (!res.ok) {
     throw new Error(`GitHub API error ${res.status} posting comment: ${await res.text()}`);
   }
+}
+
+function splitRepoFullName(repoFullName: string): { owner: string; repo: string } | null {
+  const [owner, repo] = repoFullName.split('/');
+  if (!owner || !repo) {
+    return null;
+  }
+  return { owner, repo };
+}
+
+export async function postWelcomeComment(
+  installationId: number | undefined,
+  repoFullName: string,
+  prNumber: number,
+  tokenConfig: TokenResolverConfig
+): Promise<void> {
+  const repoParts = splitRepoFullName(repoFullName);
+  if (!repoParts) {
+    throw new Error(`Invalid repo full name: ${repoFullName}`);
+  }
+
+  const token = await resolveInstallationToken(installationId, tokenConfig);
+  if (!token) {
+    throw new Error(`Unable to resolve GitHub token for welcome comment in ${repoFullName}`);
+  }
+
+  const body = [
+    '<!-- pullmatch-welcome -->',
+    'Thanks for installing PullMatch.',
+    '',
+    'PullMatch analyzes pull requests and suggests the best reviewers based on contributor history and code ownership signals.',
+    '',
+    'Open or update a PR and PullMatch will post reviewer recommendations in this thread.',
+  ].join('\n');
+
+  await postPRComment(repoParts.owner, repoParts.repo, prNumber, body, token);
 }
 
 export async function findExistingComment(

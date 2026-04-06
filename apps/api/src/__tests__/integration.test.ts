@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { Webhooks } from '@octokit/webhooks';
-import { createWebhookRouter } from '../webhook.ts';
+import { createWebhookRouter, resetWebhookStateForTests } from '../webhook.ts';
 import { clearReviewStore, getOutcomesForPR, getReviewStats } from '@pullmatch/shared';
 
 type FetchLike = typeof fetch;
@@ -16,6 +16,7 @@ afterEach(() => {
   console.error = originalConsoleError;
   delete process.env.GITHUB_TOKEN_WRITE;
   clearReviewStore();
+  resetWebhookStateForTests();
 });
 
 function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened') {
