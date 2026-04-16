@@ -16,20 +16,33 @@ export interface ReviewerRecommendation {
 }
 
 export interface ContextBrief {
-  prId: string;
   reviewer: string;
-  summary: string;
-  focusAreas: string[];
+  brief: string;
 }
 
-export { fetchPRFiles, fetchPRCommitMessages, fetchRecentCommitters, postPRComment } from './github.ts';
-export type { PRFile, Committer } from './github.ts';
+export { fetchPRFiles, fetchPRCommitMessages, fetchRecentCommitters, postPRComment, postWelcomeComment, requestReviewers, getOpenReviewCount, getOpenReviewCounts, GitHubRateLimitError, findExistingComment, updatePRComment, getLatestRateLimitStatus, PULLMATCH_MARKER } from './github.ts';
+export type { PRFile, Committer, RequestReviewersResult, GitHubRateLimitStatus } from './github.ts';
 export { buildContributorGraph } from './contributor-graph.ts';
 export type { ContributorEntry } from './contributor-graph.ts';
-export { matchReviewers } from './matcher.ts';
-export { generatePRContextBrief } from './context-brief.ts';
-export type {
-  ContextBriefInput,
-  ReviewerContextSection,
-  PRContextBriefResult,
-} from './context-brief.ts';
+export { matchReviewers, matcherOptionsFromConfig } from './matcher.ts';
+export type { MatcherOptions } from './matcher.ts';
+export { generateContextBrief } from './context-brief.ts';
+export { formatReviewerComment } from './formatter.ts';
+export { getTeamMembers, parseCodeownersTeams, resolveTeamOwnership, fetchCodeowners, parseCodeownersIndividuals, annotateCodeowners } from './teams.ts';
+export type { TeamMember, TeamResolutionResult } from './teams.ts';
+export { resolveInstallationToken, clearTokenCache, getTokenCacheSize } from './github-app-auth.ts';
+export type { TokenResolverConfig } from './github-app-auth.ts';
+export { loadRepoConfig, parseRepoConfig, filterIgnoredFiles, DEFAULT_CONFIG } from './config.ts';
+export type { RepoConfig, ReviewerConfig, ReviewerWeights, NotificationsConfig, SlackConfig } from './config.ts';
+export { formatSlackMessage, sendSlackNotification } from './slack.ts';
+export type { SlackMessage, SlackPREvent, SlackReviewer } from './slack.ts';
+export { parseInstallationEvent, parseInstallationRepositoriesEvent, formatInstallationLog } from './installations.ts';
+export type { InstallationEvent, InstallationAction } from './installations.ts';
+export { createRequestId, trackEvent, serializeAnalyticsEvent } from './analytics.ts';
+export type { AnalyticsEvent, AnalyticsEventName, SerializedAnalyticsEvent, AnalyticsValue, AnalyticsEventConsumer } from './analytics.ts';
+export { StatsCollector } from './stats.ts';
+export type { DashboardStats, RecentAnalysis } from './stats.ts';
+export { classifyFile, buildExpertiseMap, formatExpertiseTag } from './expertise.ts';
+export type { ExpertiseMap, ExpertiseDomain } from './expertise.ts';
+export { recordReviewOutcome, getReviewStats, getOutcomesForPR, clearReviewStore } from './review-tracker.ts';
+export type { ReviewAction, ReviewOutcome, ReviewerStats } from './review-tracker.ts';

@@ -1,191 +1,123 @@
-import type { ReviewerRecommendation } from './index.ts';
-import type { ContributorEntry } from './contributor-graph.ts';
-import type { PRFile } from './github.ts';
+import type { ExpertiseMap } from './expertise.ts';
+import type { ReviewerRecommendation, ContextBrief } from './index.ts';
+import { classifyFile } from './expertise.ts';
 
-export interface ContextBriefInput {
-  prId: string;
-  prTitle?: string;
-  files: PRFile[];
-  commitMessages: string[];
-  recommendations: ReviewerRecommendation[];
-  contributorGraph: Map<string, ContributorEntry>;
-}
+const DOMAIN_FOCUS: Record<string, string> = {
+  Frontend: 'UI behavior, component state, and accessibility.',
+  API: 'request/response contracts, auth paths, and error handling.',
+  Database: 'schema integrity, query safety, and data migration impact.',
+  DevOps: 'deployment safety, runtime configuration, and operational risk.',
+  Testing: 'coverage quality for regressions and edge-case behavior.',
+  Config: 'default values, environment handling, and compatibility.',
+  Docs: 'accuracy of developer guidance and examples.',
+};
 
-export interface ReviewerContextSection {
-  login: string;
-  score: number;
-  whyPicked: string[];
-  focusAreas: string[];
-}
+function topCommitSignal(commitMessages: string[]): 'feat' | 'fix' | 'refactor' | 'mixed' | 'none' {
+  if (commitMessages.length === 0) return 'none';
 
-export interface PRContextBriefResult {
-  prId: string;
-  summary: string;
-  reviewerSections: ReviewerContextSection[];
-  markdown: string;
-}
+  let feat = 0;
+  let fix = 0;
+  let refactor = 0;
 
-const PRIORITY_STATUSES = ['modified', 'added', 'removed', 'renamed'];
-
-function firstLine(text: string): string {
-  return text.split('\n')[0]?.trim() ?? '';
-}
-
-function toDirectory(path: string): string {
-  const idx = path.lastIndexOf('/');
-  return idx > 0 ? path.slice(0, idx) : '(root)';
-}
-
-function pickTopDirectories(files: PRFile[], max = 3): string[] {
-  const counts = new Map<string, number>();
-  for (const file of files) {
-    const directory = toDirectory(file.filename);
-    counts.set(directory, (counts.get(directory) ?? 0) + 1);
-  }
-
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, max)
-    .map(([directory]) => directory);
-}
-
-function formatStatusBreakdown(files: PRFile[]): string {
-  const counts = new Map<string, number>();
-  for (const file of files) {
-    const status = file.status || 'unknown';
-    counts.set(status, (counts.get(status) ?? 0) + 1);
-  }
-
-  const orderedStatuses = [
-    ...PRIORITY_STATUSES.filter((status) => counts.has(status)),
-    ...Array.from(counts.keys())
-      .filter((status) => !PRIORITY_STATUSES.includes(status))
-      .sort((a, b) => a.localeCompare(b)),
-  ];
-
-  return orderedStatuses.map((status) => `${counts.get(status)} ${status}`).join(', ');
-}
-
-function summarizeCommits(commitMessages: string[], max = 3): string[] {
-  const uniqueHeadlines = new Set<string>();
   for (const message of commitMessages) {
-    const headline = firstLine(message);
-    if (!headline) continue;
-    uniqueHeadlines.add(headline);
-    if (uniqueHeadlines.size >= max) break;
+    const match = message.trim().match(/^(feat|fix|refactor)(\(.+\))?:/i);
+    const prefix = match?.[1]?.toLowerCase();
+    if (prefix === 'feat') feat++;
+    if (prefix === 'fix') fix++;
+    if (prefix === 'refactor') refactor++;
   }
-  return Array.from(uniqueHeadlines);
+
+  const ranked = [
+    { key: 'feat' as const, count: feat },
+    { key: 'fix' as const, count: fix },
+    { key: 'refactor' as const, count: refactor },
+  ].sort((a, b) => b.count - a.count);
+
+  if (ranked[0].count === 0) return 'mixed';
+  if (ranked[0].count === ranked[1].count) return 'mixed';
+  return ranked[0].key;
 }
 
-function joinWithAnd(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+function summarizeCommitIntent(commitMessages: string[]): string {
+  const signal = topCommitSignal(commitMessages);
+  if (signal === 'feat') return 'Commits are feature-heavy, so validate new behavior and integration paths.';
+  if (signal === 'fix') return 'Commits are fix-focused, so prioritize regression and edge-case checks.';
+  if (signal === 'refactor') return 'Commits are refactor-focused, so confirm no behavior drift was introduced.';
+  if (signal === 'mixed') return 'Commits are mixed; review for both behavior changes and regression risk.';
+  return 'No commit messages were provided; prioritize correctness and backward compatibility checks.';
 }
 
-function buildWhyPicked(
-  recommendation: ReviewerRecommendation,
-  contributor: ContributorEntry | undefined
-): string[] {
-  if (!contributor) {
-    return [
-      'Recommended by ranking signals, but no direct file history was found in the current contributor graph.',
-      ...recommendation.reasons,
-    ];
-  }
-
-  const reasons: string[] = [];
-  if (contributor.exactCommits > 0) {
-    reasons.push(`Has ${contributor.exactCommits} commit(s) on exact changed files in this PR.`);
-  }
-  if (contributor.dirCommits > 0) {
-    reasons.push(`Has ${contributor.dirCommits} commit(s) in the touched directories.`);
-  }
-  reasons.push(`Most recent contribution on related code: ${contributor.latestCommit}.`);
-
-  return reasons;
+function pickReviewerDomain(reviewer: string, expertiseMap?: ExpertiseMap): string | undefined {
+  return expertiseMap?.[reviewer]?.[0]?.domain;
 }
 
-function buildFocusAreas(
-  contributor: ContributorEntry | undefined,
-  files: PRFile[],
-  topDirectories: string[],
-  commitHeadlines: string[]
-): string[] {
-  const focusAreas: string[] = [];
-  const topFiles = files.slice(0, 3).map((file) => file.filename);
-
-  if (contributor?.exactCommits) {
-    focusAreas.push(`Validate behavior changes in ${joinWithAnd(topFiles.map((file) => `\`${file}\``))}.`);
-  }
-
-  if (contributor?.dirCommits) {
-    focusAreas.push(`Check integration boundaries across ${joinWithAnd(topDirectories.map((directory) => `\`${directory}\``))}.`);
-  }
-
-  if (commitHeadlines.length > 0) {
-    focusAreas.push(`Confirm implementation matches commit intent: "${commitHeadlines[0]}".`);
-  }
-
-  if (!contributor) {
-    focusAreas.push('Provide a fresh pass on edge cases, regressions, and test coverage.');
-  }
-
-  return focusAreas;
+function filesForDomain(changedFiles: string[], domain?: string): string[] {
+  if (!domain) return [];
+  return changedFiles.filter((file) => classifyFile(file).includes(domain));
 }
 
-export function generatePRContextBrief(input: ContextBriefInput): PRContextBriefResult {
-  const topDirectories = pickTopDirectories(input.files);
-  const commitHeadlines = summarizeCommits(input.commitMessages);
-  const statusBreakdown = formatStatusBreakdown(input.files);
+function formatFileList(files: string[]): string {
+  if (files.length === 0) return 'no specific files';
+  if (files.length === 1) return files[0];
+  if (files.length === 2) return `${files[0]} and ${files[1]}`;
+  return `${files[0]}, ${files[1]}, and ${files.length - 2} more file(s)`;
+}
 
-  const summary = `${input.files.length} file(s) changed (${statusBreakdown}). Primary areas: ${joinWithAnd(topDirectories.map((directory) => `\`${directory}\``))}.`;
+function summarizeChangesForReviewer(
+  reviewer: string,
+  changedFiles: string[],
+  expertiseMap?: ExpertiseMap
+): string {
+  if (changedFiles.length === 0) return 'No changed files were provided.';
+  const domain = pickReviewerDomain(reviewer, expertiseMap);
+  const domainFiles = filesForDomain(changedFiles, domain);
 
-  const reviewerSections = input.recommendations.map((recommendation) => {
-    const contributor = input.contributorGraph.get(recommendation.login);
+  if (domain && domainFiles.length > 0) {
+    return `${domainFiles.length} changed file(s) match your ${domain} domain: ${formatFileList(domainFiles)}.`;
+  }
+
+  return `Primary touched files: ${formatFileList(changedFiles)}.`;
+}
+
+function focusGuidanceForReviewer(reviewer: string, changedFiles: string[], expertiseMap?: ExpertiseMap): string {
+  const domain = pickReviewerDomain(reviewer, expertiseMap);
+  if (domain && DOMAIN_FOCUS[domain]) {
+    return `${domain} focus: ${DOMAIN_FOCUS[domain]}`;
+  }
+
+  const touchedDomains = new Set<string>();
+  for (const file of changedFiles) {
+    for (const touched of classifyFile(file)) {
+      touchedDomains.add(touched);
+    }
+  }
+  if (touchedDomains.size > 0) {
+    return `Cross-domain review (${Array.from(touchedDomains).slice(0, 2).join(', ')}): verify boundary assumptions and side effects.`;
+  }
+  return 'General review: check behavior correctness, test coverage, and maintainability.';
+}
+
+/**
+ * Generate 3-line deterministic markdown context briefs for suggested reviewers.
+ */
+export function generateContextBrief(
+  reviewers: ReviewerRecommendation[],
+  changedFiles: string[],
+  commitMessages: string[],
+  expertiseMap?: ExpertiseMap
+): ContextBrief[] {
+  return reviewers.map((reviewer) => {
+    const whatChanged = summarizeChangesForReviewer(reviewer.login, changedFiles, expertiseMap);
+    const whyItMatters = summarizeCommitIntent(commitMessages);
+    const whatToLookFor = focusGuidanceForReviewer(reviewer.login, changedFiles, expertiseMap);
+
     return {
-      login: recommendation.login,
-      score: recommendation.score,
-      whyPicked: buildWhyPicked(recommendation, contributor),
-      focusAreas: buildFocusAreas(contributor, input.files, topDirectories, commitHeadlines),
-    } satisfies ReviewerContextSection;
+      reviewer: reviewer.login,
+      brief: [
+        `- **What changed:** ${whatChanged}`,
+        `- **Why it matters:** ${whyItMatters}`,
+        `- **What to look for:** ${whatToLookFor}`,
+      ].join('\n'),
+    } satisfies ContextBrief;
   });
-
-  const lines: string[] = [
-    '## PullMatch PR Context Brief',
-    '',
-    `PR: ${input.prTitle ? `${input.prTitle} (${input.prId})` : input.prId}`,
-    '',
-    '### Change Summary',
-    `- ${summary}`,
-  ];
-
-  if (commitHeadlines.length > 0) {
-    lines.push('- Commit intent highlights:');
-    for (const headline of commitHeadlines) {
-      lines.push(`  - ${headline}`);
-    }
-  }
-
-  lines.push('', '### Reviewer Focus', '');
-
-  for (const section of reviewerSections) {
-    lines.push(`#### @${section.login} (score: ${section.score})`);
-    lines.push('Why this reviewer:');
-    for (const reason of section.whyPicked) {
-      lines.push(`- ${reason}`);
-    }
-    lines.push('Focus areas:');
-    for (const area of section.focusAreas) {
-      lines.push(`- ${area}`);
-    }
-    lines.push('');
-  }
-
-  return {
-    prId: input.prId,
-    summary,
-    reviewerSections,
-    markdown: lines.join('\n').trimEnd(),
-  };
 }

@@ -1,0 +1,119 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #fbf6ec;
+  --bg-subtle: #f2efe8;
+  --surface: #ffffff;
+  --text: #17212d;
+  --muted: #4d5d6d;
+  --line: #d9e0e8;
+  --accent: #0d7a7a;
+  --accent-hover: #0a6363;
+  --accent-contrast: #ffffff;
+  --shadow-sm: 0 2px 8px rgba(17, 40, 60, 0.06);
+  --shadow-md: 0 8px 24px rgba(17, 40, 60, 0.1);
+  --radius: 0.75rem;
+  --font: "Avenir Next", "Segoe UI Variable", "Trebuchet MS", "Gill Sans",
+    system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c121b;
+    --bg-subtle: #111b2a;
+    --surface: #192536;
+    --text: #f4f7fb;
+    --muted: #b8c6d5;
+    --line: #2d3d4f;
+    --accent: #59c6bb;
+    --accent-hover: #72d4ca;
+    --accent-contrast: #08141f;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  font-family: var(--font);
+  background: linear-gradient(155deg, var(--bg) 0%, var(--bg-subtle) 100%);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.siteShell {
+  min-height: 100vh;
+}
+
+.siteHeader {
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--bg-subtle), transparent 30%);
+}
+
+.siteInner {
+  width: min(1040px, calc(100% - 2.5rem));
+  margin: 0 auto;
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.siteLogo {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.siteNavLinks {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  list-style: none;
+}
+
+.siteNavLinks a {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.siteNavLinks a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .siteInner {
+    width: calc(100% - 1.5rem);
+  }
+
+  .siteHeader {
+    position: static;
+  }
+}

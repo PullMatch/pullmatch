@@ -1,0 +1,641 @@
+import assert from 'node:assert/strict';
+import { afterEach, describe, it } from 'node:test';
+import { Webhooks } from '@octokit/webhooks';
+import { PULLMATCH_MARKER } from '@pullmatch/shared';
+import { createWebhookRouter, resetWebhookStateForTests } from '../webhook.ts';
+
+type FetchLike = typeof fetch;
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  delete process.env.GITHUB_TOKEN_WRITE;
+  resetWebhookStateForTests();
+});
+
+function makePullRequestPayload(action: 'opened' | 'synchronize' = 'opened', number = 42) {
+  return {
+    action,
+    number,
+    pull_request: {
+      title: 'Improve reviewer matching',
+      user: { login: 'author-user' },
+      head: { ref: 'feature/reviewers', sha: 'abc123' },
+      base: { ref: 'main' },
+      diff_url: 'https://example.test/diff',
+      html_url: `https://example.test/pull/${number}`,
+    },
+    repository: {
+      full_name: 'acme/pullmatch',
+      name: 'pullmatch',
+      owner: { login: 'acme' },
+    },
+  };
+}
+
+function makeInstallationPayload(action: 'created' | 'deleted' = 'created') {
+  return {
+    action,
+    installation: {
+      id: 1001,
+      account: { login: 'acme' },
+    },
+    sender: { login: 'installer-user' },
+    repositories: [{ full_name: 'acme/pullmatch' }],
+  };
+}
+
+function makeInstallationRepositoriesPayload(action: 'added' | 'removed' = 'added') {
+  return {
+    action,
+    installation: {
+      id: 1001,
+      account: { login: 'acme' },
+    },
+    sender: { login: 'installer-user' },
+    repositories_added: action === 'added' ? [{ full_name: 'acme/new-repo' }] : [],
+    repositories_removed: action === 'removed' ? [{ full_name: 'acme/old-repo' }] : [],
+  };
+}
+
+async function signPayload(secret: string, payload: string): Promise<string> {
+  const signer = new Webhooks({ secret });
+  return signer.sign(payload);
+}
+
+async function sendWebhookRequest(params: {
+  secret: string;
+  eventName: string;
+  payload: string;
+  includeSignature?: boolean;
+}) {
+  const { secret, eventName, payload, includeSignature = true } = params;
+  const signature = includeSignature ? await signPayload(secret, payload) : undefined;
+  const router = createWebhookRouter(secret);
+
+  return router.request('http://localhost/webhook', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(includeSignature ? { 'x-hub-signature-256': signature! } : {}),
+      'x-github-event': eventName,
+      'x-github-delivery': 'delivery-1',
+    },
+    body: payload,
+  });
+}
+
+async function waitFor(check: () => boolean, timeoutMs = 1_500): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for async webhook pipeline');
+}
+
+describe('createWebhookRouter', () => {
+  it('returns 400 when signature header is missing', async () => {
+    const payload = JSON.stringify(makePullRequestPayload());
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+      includeSignature: false,
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.deepEqual(body, { error: 'Missing X-Hub-Signature-256 header' });
+  });
+
+  it('returns 200 for non-PR events and does not run analysis', async () => {
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls.push(String(input));
+      return new Response('unexpected call', { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'ping',
+      payload: JSON.stringify({ zen: 'Keep it logically awesome.' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('handles invalid signatures as a 400 response', async () => {
+    const secret = 'test-secret';
+    const payload = JSON.stringify(makePullRequestPayload());
+    const router = createWebhookRouter(secret);
+
+    const response = await router.request('http://localhost/webhook', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': 'sha256=invalid',
+        'x-github-event': 'pull_request',
+        'x-github-delivery': 'delivery-invalid',
+      },
+      body: payload,
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'Webhook verification or processing failed' });
+  });
+
+  it('processes pull_request.opened and posts reviewer suggestions', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/pulls/42/files')) {
+        return new Response(JSON.stringify([{ filename: 'src/matcher.ts', status: 'modified' }]), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-ratelimit-limit': '5000',
+            'x-ratelimit-remaining': '5',
+            'x-ratelimit-reset': '1900000000',
+          },
+        });
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): improve matching determinism' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      // List comments — no existing PullMatch comment
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes(PULLMATCH_MARKER), 'comment should contain HTML marker');
+    assert.ok(commentBody!.includes('## PullMatch Reviewer Suggestions'));
+    assert.ok(commentBody!.includes('### @alice'));
+    assert.ok(commentBody!.includes('> **Context:**'));
+    assert.ok(commentBody!.includes('GitHub API rate limit is low: 5/5000 remaining'));
+    assert.ok(commentBody!.includes('_Powered by [PullMatch](https://github.com/pullmatch)_'));
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('handles installation.created without running analysis fetches', async () => {
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls.push(String(input));
+      return new Response('unexpected call', { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation',
+      payload: JSON.stringify(makeInstallationPayload('created')),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('handles installation_repositories.added without running analysis fetches', async () => {
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls.push(String(input));
+      return new Response('unexpected call', { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation_repositories',
+      payload: JSON.stringify(makeInstallationRepositoriesPayload('added')),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(fetchCalls.length, 0);
+    assert.ok(response.headers.get('x-pullmatch-request-id'));
+  });
+
+  it('posts onboarding welcome comment only once on first PR opened after install', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+
+    const installationResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'installation',
+      payload: JSON.stringify(makeInstallationPayload('created')),
+    });
+    assert.equal(installationResponse.status, 200);
+
+    const postedBodies: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/pulls/') && url.includes('/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/') && url.includes('/commits')) {
+        return Response.json([{ commit: { message: 'feat: add onboarding comment' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/issues/') && url.includes('/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/') && url.includes('/comments') && init?.method === 'POST') {
+        postedBodies.push((JSON.parse(String(init.body)) as { body: string }).body);
+        return Response.json({ id: postedBodies.length }, { status: 201 });
+      }
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const firstPrResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload: JSON.stringify(makePullRequestPayload('opened', 42)),
+    });
+    assert.equal(firstPrResponse.status, 200);
+    await waitFor(() => postedBodies.some((body) => body.includes('<!-- pullmatch-welcome -->')));
+
+    const welcomesAfterFirstPr = postedBodies.filter((body) => body.includes('<!-- pullmatch-welcome -->')).length;
+    assert.equal(welcomesAfterFirstPr, 1);
+
+    const secondPrResponse = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload: JSON.stringify(makePullRequestPayload('opened', 43)),
+    });
+    assert.equal(secondPrResponse.status, 200);
+
+    await waitFor(() => postedBodies.some((body) => body.includes(PULLMATCH_MARKER)));
+    const totalWelcomes = postedBodies.filter((body) => body.includes('<!-- pullmatch-welcome -->')).length;
+    assert.equal(totalWelcomes, 1, 'welcome comment should be posted exactly once per repo');
+  });
+
+  it('updates existing comment on synchronize instead of posting a new one', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('synchronize'));
+
+    let updatedBody: string | null = null;
+    let createdComment = false;
+    const existingCommentId = 999;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'feat(api): improve reviewer signal selection' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      // List comments — return one with PullMatch marker
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([
+          { id: existingCommentId, body: `${PULLMATCH_MARKER}\n## PullMatch Reviewer Suggestions\nold content` },
+        ]);
+      }
+      // Update comment (PATCH)
+      if (url.includes(`/issues/comments/${existingCommentId}`) && init?.method === 'PATCH') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        updatedBody = parsed.body;
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      // Should NOT create a new comment
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        createdComment = true;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+
+    await waitFor(() => updatedBody !== null);
+    assert.ok(updatedBody!.includes(PULLMATCH_MARKER), 'updated comment should contain marker');
+    assert.ok(updatedBody!.includes('## PullMatch Reviewer Suggestions'));
+    assert.ok(updatedBody!.includes('> **Context:**'));
+    assert.equal(createdComment, false, 'should not create a new comment when one exists');
+  });
+
+  it('respects contextBriefs: false and omits briefs from comment', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    const configYaml = 'contextBriefs: false\n';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      // Serve .pullmatch.yml with contextBriefs disabled
+      if (url.includes('/contents/.pullmatch.yml')) {
+        return new Response(configYaml, { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      // CODEOWNERS / commit messages - return 404 for content lookups
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes('### @alice'), 'should still recommend alice');
+    assert.ok(!commentBody!.includes('> **Context:**'), 'should NOT contain context briefs when disabled');
+  });
+
+  it('respects ignore patterns and skips ignored files', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    const configYaml = 'ignore:\n  - "*.md"\n';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/contents/.pullmatch.yml')) {
+        return new Response(configYaml, { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      if (url.includes('/pulls/42/files')) {
+        // All files are markdown — should be filtered out
+        return Response.json([
+          { filename: 'README.md', status: 'modified' },
+          { filename: 'docs/guide.md', status: 'added' },
+        ]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    // Pipeline should skip analysis since all files are ignored — no comment posted
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(commentBody, null, 'should not post a comment when all files are ignored');
+  });
+
+  it('limits reviewer count via config reviewers.count', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    const configYaml = 'reviewers:\n  count: 1\n';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/contents/.pullmatch.yml')) {
+        return new Response(configYaml, { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix: scoring' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+          { author: { login: 'bob' }, commit: { author: { date: '2026-03-19T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+          { author: { login: 'bob' }, commit: { author: { date: '2026-03-18T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes('### @alice'), 'should include top reviewer');
+    assert.ok(!commentBody!.includes('### @bob'), 'should exclude second reviewer when count is 1');
+  });
+
+  it('enriches contributors with CODEOWNERS data when includeCodeowners is true', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    const codeowners = '*.ts @alice\n';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      // No .pullmatch.yml — defaults (includeCodeowners: true)
+      if (url.includes('/contents/.pullmatch.yml')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      if (url.includes('/contents/.github/CODEOWNERS')) {
+        return new Response(codeowners, { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix: scoring' } }]);
+      }
+      if (url.includes('/commits?path=src%2Fmatcher.ts')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-20T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/commits?path=src')) {
+        return Response.json([
+          { author: { login: 'alice' }, commit: { author: { date: '2026-03-21T00:00:00.000Z' } } },
+        ]);
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      // Other CODEOWNERS paths
+      if (url.includes('/contents/')) {
+        return new Response('Not Found', { status: 404 });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes('### @alice'));
+    assert.ok(commentBody!.includes('code owner'), 'should mention code ownership in reasons');
+  });
+
+  it('posts a degraded comment when contributor graph data is unavailable', async () => {
+    process.env.GITHUB_TOKEN_WRITE = 'token-for-tests';
+    const payload = JSON.stringify(makePullRequestPayload('opened'));
+
+    let commentBody: string | null = null;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.includes('/pulls/42/files')) {
+        return Response.json([{ filename: 'src/matcher.ts', status: 'modified' }]);
+      }
+      if (url.includes('/pulls/42/commits')) {
+        return Response.json([{ commit: { message: 'fix(api): fallback behavior' } }]);
+      }
+      if (url.includes('/commits?path=')) {
+        throw new Error('network unavailable');
+      }
+      if (url.includes('/issues/42/comments') && (!init?.method || init.method === 'GET')) {
+        return Response.json([]);
+      }
+      if (url.includes('/issues/42/comments') && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body)) as { body: string };
+        commentBody = parsed.body;
+        return new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(`Unexpected URL in test: ${url}`, { status: 500 });
+    }) as FetchLike;
+
+    const response = await sendWebhookRequest({
+      secret: 'test-secret',
+      eventName: 'pull_request',
+      payload,
+    });
+
+    assert.equal(response.status, 200);
+    await waitFor(() => commentBody !== null);
+    assert.ok(commentBody!.includes('No confident reviewer candidates were found for this PR yet.'));
+    assert.ok(commentBody!.includes('### Analysis Notes'));
+    assert.ok(commentBody!.includes('No reviewer candidates were found from commit history at this time.'));
+  });
+});

@@ -1,0 +1,15 @@
+node_modules
+.git
+.next
+artifacts/
+agents/
+docs/
+marketplace/
+scripts/
+*.md
+!package.json
+.env
+.env.*
+!.env.example
+fly.toml
+.github/

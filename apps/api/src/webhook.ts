@@ -5,10 +5,38 @@ import {
   fetchPRCommitMessages,
   buildContributorGraph,
   matchReviewers,
-  generatePRContextBrief,
   postPRComment,
-} from '../../../packages/shared/src/index.ts';
-import type { ReviewerRecommendation, ReviewerContextSection } from '../../../packages/shared/src/index.ts';
+  requestReviewers,
+  getOpenReviewCounts,
+  loadRepoConfig,
+  filterIgnoredFiles,
+  matcherOptionsFromConfig,
+  fetchCodeowners,
+  annotateCodeowners,
+  resolveTeamOwnership,
+  parseInstallationEvent,
+  parseInstallationRepositoriesEvent,
+  formatInstallationLog,
+  trackEvent,
+  createRequestId,
+  GitHubRateLimitError,
+  getLatestRateLimitStatus,
+  generateContextBrief,
+  resolveInstallationToken,
+  findExistingComment,
+  updatePRComment,
+  formatReviewerComment,
+  formatSlackMessage,
+  sendSlackNotification,
+  buildExpertiseMap,
+  recordReviewOutcome,
+  postWelcomeComment as postWelcomeRepoComment,
+  type StatsCollector,
+} from '@pullmatch/shared';
+import type { ExpertiseMap, TokenResolverConfig, ReviewAction, TeamResolutionResult } from '@pullmatch/shared';
+import type { ContextBrief, ContributorEntry } from '@pullmatch/shared';
+import { logger } from './logger.ts';
+import { recordWebhookReceived, recordError } from './observability.ts';
 
 export interface ParsedPREvent {
   action: 'opened' | 'synchronize';
@@ -24,126 +52,353 @@ export interface ParsedPREvent {
   sha: string;
   diffUrl: string;
   htmlUrl: string;
+  installationId?: number;
 }
 
-interface AnalysisPipelineDeps {
-  fetchPRFiles: typeof fetchPRFiles;
-  fetchPRCommitMessages: typeof fetchPRCommitMessages;
-  buildContributorGraph: typeof buildContributorGraph;
-  matchReviewers: typeof matchReviewers;
-  generatePRContextBrief: typeof generatePRContextBrief;
-  postPRComment: typeof postPRComment;
+const installationIdByRepo = new Map<string, number>();
+const pendingWelcomeCommentRepos = new Set<string>();
+const welcomedRepos = new Set<string>();
+
+function normalizeRepoKey(repoFullName: string): string {
+  return repoFullName.toLowerCase();
 }
 
-const defaultPipelineDeps: AnalysisPipelineDeps = {
-  fetchPRFiles,
-  fetchPRCommitMessages,
-  buildContributorGraph,
-  matchReviewers,
-  generatePRContextBrief,
-  postPRComment,
-};
+function rememberInstallationForRepos(installationId: number | null, repos: string[], queueWelcomeComment: boolean): void {
+  if (!installationId) {
+    return;
+  }
 
-export async function runAnalysisPipeline(
+  for (const repo of repos) {
+    const repoKey = normalizeRepoKey(repo);
+    installationIdByRepo.set(repoKey, installationId);
+    if (queueWelcomeComment) {
+      pendingWelcomeCommentRepos.add(repoKey);
+    }
+  }
+}
+
+function forgetInstallationForRepos(repos: string[]): void {
+  for (const repo of repos) {
+    const repoKey = normalizeRepoKey(repo);
+    installationIdByRepo.delete(repoKey);
+    pendingWelcomeCommentRepos.delete(repoKey);
+    welcomedRepos.delete(repoKey);
+  }
+}
+
+function resolveInstallationId(installationId: number | undefined, repoFullName: string): number | undefined {
+  if (installationId) {
+    return installationId;
+  }
+  return installationIdByRepo.get(normalizeRepoKey(repoFullName));
+}
+
+function shouldPostWelcomeComment(action: ParsedPREvent['action'], repoFullName: string): boolean {
+  if (action !== 'opened') {
+    return false;
+  }
+  const repoKey = normalizeRepoKey(repoFullName);
+  return pendingWelcomeCommentRepos.has(repoKey) && !welcomedRepos.has(repoKey);
+}
+
+function markWelcomeCommentPosted(repoFullName: string): void {
+  const repoKey = normalizeRepoKey(repoFullName);
+  welcomedRepos.add(repoKey);
+  pendingWelcomeCommentRepos.delete(repoKey);
+}
+
+export function resetWebhookStateForTests(): void {
+  installationIdByRepo.clear();
+  pendingWelcomeCommentRepos.clear();
+  welcomedRepos.clear();
+}
+
+async function runAnalysisPipeline(
   event: ParsedPREvent,
-  githubToken: string | undefined,
-  deps: AnalysisPipelineDeps = defaultPipelineDeps
+  tokenConfig: TokenResolverConfig,
+  statsCollector?: StatsCollector
 ): Promise<void> {
-  console.log(`[analysis] Starting pipeline for PR #${event.prNumber} in ${event.repo}`);
+  const startedAtMs = Date.now();
+  logger.info('Starting analysis pipeline', { pr: event.prNumber, repo: event.repo });
+  trackEvent({
+    name: 'pr_received',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+    },
+  }, statsCollector);
 
+  const resolvedInstallationId = resolveInstallationId(event.installationId, event.repo);
+  rememberInstallationForRepos(resolvedInstallationId ?? null, [event.repo], false);
+
+  if (shouldPostWelcomeComment(event.action, event.repo)) {
+    try {
+      await postWelcomeRepoComment(resolvedInstallationId, event.repo, event.prNumber, tokenConfig);
+      markWelcomeCommentPosted(event.repo);
+      logger.info('Posted onboarding welcome comment', { pr: event.prNumber, repo: event.repo });
+      trackEvent({
+        name: 'comment_posted',
+        requestId: event.deliveryId,
+        properties: {
+          repo: event.repo,
+          pr_number: event.prNumber,
+          mode: 'onboarding_welcome',
+        },
+      }, statsCollector);
+    } catch (err) {
+      logger.warn('Failed to post onboarding welcome comment', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const githubToken = await resolveInstallationToken(resolvedInstallationId, tokenConfig);
   if (!githubToken) {
-    console.warn('[analysis] GITHUB_TOKEN not set — skipping reviewer analysis');
+    logger.warn('No GitHub token available — skipping reviewer analysis');
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'missing_token',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
-  // 1. Fetch changed files
-  const prFiles = await deps.fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
+  // 1. Load repo config (.pullmatch.yml)
+  const config = await loadRepoConfig(event.owner, event.repoName, githubToken);
+  logger.info('Repo config loaded', { pr: event.prNumber, ignore: config.ignore.length, reviewerCount: config.reviewers.count });
+
+  // 2. Fetch changed files
+  const prFiles = await fetchPRFiles(event.owner, event.repoName, event.prNumber, githubToken);
   if (prFiles.length === 0) {
-    console.log('[analysis] No files changed — skipping');
+    logger.info('No files changed — skipping', { pr: event.prNumber });
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'no_changed_files',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
-  const filenames = prFiles.map((f) => f.filename);
-  console.log(`[analysis] ${filenames.length} file(s) changed`);
+  // 3. Filter out ignored files
+  const allFilenames = prFiles.map((f) => f.filename);
+  const filenames = filterIgnoredFiles(allFilenames, config.ignore);
+  logger.info('Files changed', { pr: event.prNumber, total: allFilenames.length, afterFilter: filenames.length });
 
-  // 2. Build contributor graph from commit history for changed files
-  const graph = await deps.buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
-
-  // 3. Match top reviewers (excluding PR author)
-  const recommendations = deps.matchReviewers(graph, event.author);
-
-  if (recommendations.length === 0) {
-    console.log('[analysis] No reviewer candidates found');
+  if (filenames.length === 0) {
+    logger.info('All files matched ignore patterns — skipping', { pr: event.prNumber });
+    trackEvent({
+      name: 'analysis_skipped',
+      requestId: event.deliveryId,
+      properties: {
+        reason: 'all_files_ignored',
+        repo: event.repo,
+        pr_number: event.prNumber,
+      },
+    }, statsCollector);
     return;
   }
 
-  // 4. Generate reviewer context briefs
-  let commitMessages: string[] = [];
+  // 4. Build contributor graph from commit history for changed files
+  const degradationNotes: string[] = [];
+  let graph = new Map<string, ContributorEntry>();
   try {
-    commitMessages = await deps.fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[analysis] Unable to fetch PR commit messages; continuing without them: ${message}`);
+    graph = await buildContributorGraph(event.owner, event.repoName, filenames, githubToken);
+  } catch (err) {
+    degradationNotes.push('Contributor graph could not be fully built; using limited PR metadata only.');
+    logger.warn('Contributor graph build failed', {
+      pr: event.prNumber,
+      repo: event.repo,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
-  const contextBrief = deps.generatePRContextBrief({
-    prId: `${event.owner}/${event.repoName}#${event.prNumber}`,
-    prTitle: event.title,
-    files: prFiles,
-    commitMessages,
+  // 5. Optionally enrich contributor graph with CODEOWNERS data
+  let teamResolution: TeamResolutionResult | undefined;
+  if (config.reviewers.includeCodeowners && graph.size > 0) {
+    try {
+      const codeownersContent = await fetchCodeowners(event.owner, event.repoName, githubToken);
+      if (codeownersContent) {
+        annotateCodeowners(graph, codeownersContent, filenames);
+        teamResolution = await resolveTeamOwnership(event.owner, codeownersContent, filenames, githubToken);
+        if (teamResolution.teamOwnerLogins.size > 0) {
+          logger.info('Team ownership resolved', { pr: event.prNumber, teamOwners: teamResolution.teamOwnerLogins.size });
+        }
+      }
+    } catch (err) {
+      degradationNotes.push('CODEOWNERS data could not be loaded; scoring proceeds without code ownership signals.');
+      logger.warn('CODEOWNERS fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 6. Optionally fetch review load data for load balancing
+  const matcherOpts = matcherOptionsFromConfig(config.reviewers);
+  if (teamResolution) {
+    matcherOpts.teamResolution = teamResolution;
+  }
+  if (config.reviewers.loadBalancing) {
+    const candidateLogins = Array.from(graph.keys()).filter((l) => l !== event.author);
+    if (candidateLogins.length > 0) {
+      const loadData = await getOpenReviewCounts(event.owner, event.repoName, candidateLogins, githubToken);
+      matcherOpts.reviewLoadData = loadData;
+      logger.info('Review load data fetched', { pr: event.prNumber, candidates: candidateLogins.length, loaded: loadData.size });
+    }
+  }
+
+  // 6. Match top reviewers (excluding PR author, applying config)
+  const recommendations = graph.size > 0 ? matchReviewers(graph, event.author, matcherOpts) : [];
+  if (recommendations.length === 0) {
+    logger.info('No reviewer candidates found', { pr: event.prNumber });
+    degradationNotes.push('No reviewer candidates were found from commit history at this time.');
+  }
+
+  // 7. Build expertise map from contributor graph
+  const expertiseMap: ExpertiseMap = graph.size > 0 ? buildExpertiseMap(graph, filenames) : {};
+
+  // 8. Generate context briefs for each reviewer (if enabled)
+  let commitMessages: string[] = [];
+  let briefs = new Map<string, ContextBrief>();
+
+  if (config.contextBriefs) {
+    try {
+      commitMessages = await fetchPRCommitMessages(event.owner, event.repoName, event.prNumber, githubToken);
+    } catch (err) {
+      degradationNotes.push('Context brief inputs were partially unavailable; suggestions are shown without commit intent details.');
+      logger.warn('Commit message fetch failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      const generatedBriefs = generateContextBrief(recommendations, filenames, commitMessages, expertiseMap);
+      briefs = new Map(generatedBriefs.map((brief) => [brief.reviewer, brief]));
+    } catch (err) {
+      degradationNotes.push('Context brief generation failed; reviewer suggestions are shown without briefs.');
+      logger.warn('Context brief generation failed', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const footerNotes: string[] = [];
+  const rateLimit = getLatestRateLimitStatus();
+  if (rateLimit?.isLow) {
+    const resetText = rateLimit.resetAt ? `, resets at ${rateLimit.resetAt.toISOString()}` : '';
+    footerNotes.push(`GitHub API rate limit is low: ${rateLimit.remaining ?? 'unknown'}/${rateLimit.limit ?? 'unknown'} remaining${resetText}.`);
+  }
+
+  // 9. Format comment and create or update (dedup on synchronize)
+  const comment = formatReviewerComment({
+    title: event.title,
     recommendations,
-    contributorGraph: graph,
+    briefs,
+    expertiseMap,
+    degradationNotes,
+    footerNotes,
   });
+  const existingCommentId = await findExistingComment(event.owner, event.repoName, event.prNumber, githubToken);
 
-  // 5. Format and post comment
-  const comment = formatReviewerComment(event, recommendations, contextBrief.reviewerSections);
-  await deps.postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
-  console.log(`[analysis] Posted reviewer suggestions for PR #${event.prNumber}`);
-}
+  if (existingCommentId) {
+    await updatePRComment(event.owner, event.repoName, existingCommentId, comment, githubToken);
+    logger.info('Updated reviewer suggestions', { pr: event.prNumber, repo: event.repo, commentId: existingCommentId });
+  } else {
+    await postPRComment(event.owner, event.repoName, event.prNumber, comment, githubToken);
+    logger.info('Posted reviewer suggestions', { pr: event.prNumber, repo: event.repo });
+  }
+  trackEvent({
+    name: 'comment_posted',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+      mode: existingCommentId ? 'update' : 'create',
+    },
+  }, statsCollector);
 
-function formatReviewerComment(
-  event: ParsedPREvent,
-  recommendations: ReviewerRecommendation[],
-  reviewerSections: ReviewerContextSection[]
-): string {
-  const reviewerBriefByLogin = new Map(reviewerSections.map((section) => [section.login, section] as const));
+  // 10. Auto-request reviewers via GitHub API (opt-in)
+  if (config.reviewers.autoAssign) {
+    const topLogins = recommendations
+      .slice(0, config.reviewers.autoAssignCount)
+      .map((r) => r.login);
 
-  const lines: string[] = [
-    '## PullMatch Reviewer Suggestions',
-    '',
-    `Analyzed **${event.title}** and found ${recommendations.length} suggested reviewer(s) based on code ownership, recent activity, and review context.`,
-    '',
-  ];
-
-  for (const rec of recommendations) {
-    const brief = reviewerBriefByLogin.get(rec.login);
-    lines.push(`### @${rec.login} (score: ${rec.score})`);
-    lines.push('Recommendation signals:');
-    for (const reason of rec.reasons) {
-      lines.push(`- ${reason}`);
+    if (topLogins.length > 0) {
+      const result = await requestReviewers(event.owner, event.repoName, event.prNumber, topLogins, githubToken);
+      logger.info('Auto-requested reviewers', {
+        pr: event.prNumber,
+        requested: result.requested,
+        failed: result.failed,
+      });
     }
-    if (brief) {
-      lines.push('Context brief:');
-      lines.push('Why this reviewer:');
-      for (const reason of brief.whyPicked) {
-        lines.push(`- ${reason}`);
-      }
-      lines.push('Focus areas:');
-      for (const area of brief.focusAreas) {
-        lines.push(`- ${area}`);
-      }
-    }
-    lines.push('');
   }
 
-  lines.push('---');
-  lines.push('_Powered by [PullMatch](https://github.com/pullmatch)_');
+  // 10. Optional Slack notifications (fully opt-in)
+  if (config.notifications.slack) {
+    const slackMessage = formatSlackMessage(
+      {
+        title: event.title,
+        author: event.author,
+        htmlUrl: event.htmlUrl,
+        repo: event.repo,
+        prNumber: event.prNumber,
+      },
+      recommendations.map((recommendation) => ({
+        login: recommendation.login,
+        score: recommendation.score,
+      }))
+    );
 
-  return lines.join('\n');
+    if (config.notifications.slack.channel) {
+      slackMessage.channel = config.notifications.slack.channel;
+    }
+
+    try {
+      await sendSlackNotification(config.notifications.slack.webhookUrl, slackMessage);
+      logger.info('Slack notification sent', { pr: event.prNumber, repo: event.repo });
+    } catch (err) {
+      logger.warn('Failed to send Slack notification', {
+        pr: event.prNumber,
+        repo: event.repo,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  trackEvent({
+    name: 'analysis_complete',
+    requestId: event.deliveryId,
+    properties: {
+      repo: event.repo,
+      pr_number: event.prNumber,
+      reviewers_suggested: recommendations.length,
+      response_ms: Date.now() - startedAtMs,
+    },
+  }, statsCollector);
 }
 
-export function createWebhookRouter(webhookSecret: string): Hono {
-  const githubToken = process.env.GITHUB_TOKEN;
+export function createWebhookRouter(webhookSecret: string, statsCollector?: StatsCollector): Hono {
+  const tokenConfig: TokenResolverConfig = {
+    appId: process.env.GITHUB_APP_ID ?? '',
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
+    fallbackToken: process.env.GITHUB_TOKEN_WRITE,
+  };
   const webhooks = new Webhooks({ secret: webhookSecret });
 
   webhooks.on(['pull_request.opened', 'pull_request.synchronize'], ({ id, payload }) => {
@@ -164,17 +419,158 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       sha: pr.head.sha,
       diffUrl: pr.diff_url,
       htmlUrl: pr.html_url,
+      installationId: (payload as Record<string, unknown>).installation
+        ? ((payload as Record<string, unknown>).installation as { id: number }).id
+        : undefined,
     };
 
-    // Fire-and-forget: don't block webhook response on analysis
-    runAnalysisPipeline(parsed, githubToken).catch((err) => {
-      console.error(`[analysis] Pipeline error for PR #${parsed.prNumber}:`, err instanceof Error ? err.message : String(err));
+    // Resolve token per-event (installation tokens are short-lived and per-org)
+    runAnalysisPipeline(parsed, tokenConfig, statsCollector).catch(async (err) => {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      recordError(errorMessage);
+      logger.error('Pipeline error', { pr: parsed.prNumber, error: errorMessage });
+      trackEvent({
+        name: 'analysis_error',
+        requestId: parsed.deliveryId,
+        properties: {
+          repo: parsed.repo,
+          pr_number: parsed.prNumber,
+          error: errorMessage,
+        },
+      }, statsCollector);
+
+      // Post an error comment on the PR so the user knows what happened
+      try {
+        const token = await resolveInstallationToken(parsed.installationId, tokenConfig).catch(() => undefined);
+        if (token) {
+          const isRateLimit = err instanceof GitHubRateLimitError;
+          const errorComment = isRateLimit
+            ? `⚠️ PullMatch was rate-limited by the GitHub API and paused analysis. Next safe retry is after ${err.resetAt.toISOString()}.`
+            : '⚠️ PullMatch encountered an error analyzing this PR. We will retry on the next push.';
+          await postPRComment(parsed.owner, parsed.repoName, parsed.prNumber, errorComment, token);
+        }
+      } catch (commentErr) {
+        logger.error('Failed to post error comment', { pr: parsed.prNumber, error: commentErr instanceof Error ? commentErr.message : String(commentErr) });
+      }
     });
+  });
+
+  webhooks.on(['installation.created', 'installation.deleted'], ({ id, payload }) => {
+    const parsed = parseInstallationEvent(payload);
+    if (!parsed) {
+      return;
+    }
+
+    if (parsed.action === 'created') {
+      rememberInstallationForRepos(parsed.installationId, parsed.repos, true);
+    } else {
+      forgetInstallationForRepos(parsed.repos);
+    }
+
+    logger.info('GitHub App installation event', {
+      deliveryId: id,
+      account: parsed.org,
+      repoCount: parsed.repos.length,
+      ...formatInstallationLog(parsed),
+    });
+
+    trackEvent({
+      name: 'installation_event',
+      requestId: id,
+      properties: {
+        action: parsed.action,
+        org: parsed.org,
+        repoCount: parsed.repos.length,
+        installerLogin: parsed.installerLogin,
+        installationId: parsed.installationId,
+      },
+    }, statsCollector);
+  });
+
+  webhooks.on(['installation_repositories.added', 'installation_repositories.removed'], ({ id, payload }) => {
+    const parsed = parseInstallationRepositoriesEvent(payload);
+    if (!parsed) {
+      return;
+    }
+
+    if (parsed.action === 'added') {
+      rememberInstallationForRepos(parsed.installationId, parsed.repos, true);
+    } else {
+      forgetInstallationForRepos(parsed.repos);
+    }
+
+    logger.info('GitHub App installation repositories changed', {
+      deliveryId: id,
+      ...formatInstallationLog(parsed),
+    });
+
+    trackEvent({
+      name: 'installation_event',
+      requestId: id,
+      properties: {
+        action: parsed.action,
+        org: parsed.org,
+        repoCount: parsed.repos.length,
+        installerLogin: parsed.installerLogin,
+        installationId: parsed.installationId,
+      },
+    }, statsCollector);
+  });
+
+  webhooks.on(['pull_request_review.submitted', 'pull_request_review.dismissed'], ({ id, payload }) => {
+    const review = payload.review;
+    const pr = payload.pull_request;
+    const repo = payload.repository;
+    const reviewer = review.user?.login ?? 'unknown';
+    const repoFullName = repo.full_name;
+    const prNumber = pr.number;
+
+    // Map GitHub review state to our action type
+    let action: ReviewAction;
+    if (payload.action === 'dismissed') {
+      action = 'dismissed';
+    } else {
+      // submitted event — review.state is 'approved', 'changes_requested', or 'commented'
+      const state = review.state?.toLowerCase();
+      if (state === 'approved') {
+        action = 'approved';
+      } else if (state === 'changes_requested') {
+        action = 'changes_requested';
+      } else {
+        action = 'commented';
+      }
+    }
+
+    const timestamp = review.submitted_at ?? new Date().toISOString();
+
+    recordReviewOutcome(repoFullName, prNumber, reviewer, action, timestamp);
+
+    logger.info('Review outcome recorded', {
+      deliveryId: id,
+      repo: repoFullName,
+      pr: prNumber,
+      reviewer,
+      action,
+    });
+
+    trackEvent({
+      name: 'review_completed',
+      requestId: id,
+      properties: {
+        repo: repoFullName,
+        pr_number: prNumber,
+        reviewer,
+        action,
+      },
+    }, statsCollector);
   });
 
   const router = new Hono();
 
   router.post('/webhook', async (c) => {
+    const requestId = createRequestId();
+    c.header('X-PullMatch-Request-Id', requestId);
+
     const signature = c.req.header('X-Hub-Signature-256');
     const eventName = c.req.header('X-GitHub-Event');
     const deliveryId = c.req.header('X-GitHub-Delivery') ?? 'unknown';
@@ -185,6 +581,9 @@ export function createWebhookRouter(webhookSecret: string): Hono {
     if (!eventName) {
       return c.json({ error: 'Missing X-GitHub-Event header' }, 400);
     }
+
+    logger.info('Webhook received', { event: eventName, deliveryId, requestId });
+    recordWebhookReceived();
 
     const rawBody = await c.req.text();
 
@@ -198,7 +597,7 @@ export function createWebhookRouter(webhookSecret: string): Hono {
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[webhook] Error processing event:', message);
+      logger.error('Webhook processing failed', { event: eventName, deliveryId, requestId, error: message });
       // Return 400 for signature failures, keeping 5xx for unexpected errors
       return c.json({ error: 'Webhook verification or processing failed' }, 400);
     }

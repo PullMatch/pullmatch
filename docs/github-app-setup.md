@@ -103,3 +103,43 @@ Verifies the `X-Hub-Signature-256` HMAC signature before processing.
 | `Missing X-Hub-Signature-256 header` | Make sure you set a Webhook secret in the GitHub App settings |
 | `Webhook verification or processing failed` | Secret mismatch — check `GITHUB_WEBHOOK_SECRET` matches the GitHub App secret |
 | Server not receiving events | Make sure smee is running and the Webhook URL is saved in the GitHub App |
+
+---
+
+## GitHub Marketplace Listing Metadata
+
+Use these values when publishing the PullMatch GitHub App to the Marketplace.
+
+### Short Description (~200 chars)
+
+> PullMatch analyzes pull requests and recommends the best reviewers using commit history, code ownership, and recency — so the right people review every PR.
+
+### Detailed Description (~1000 chars)
+
+> PullMatch is the intelligence layer for code review. When a pull request is opened, PullMatch automatically analyzes changed files, builds a contributor graph from commit history, and scores potential reviewers based on four signals:
+>
+> - **Exact file commits** — who has directly worked on these files
+> - **Directory commits** — who knows the surrounding codebase
+> - **Recency** — who has been active recently (90-day decay)
+> - **CODEOWNERS** — designated code owners get a scoring boost
+>
+> Results are posted as a clear, ranked PR comment with per-reviewer reasoning and domain expertise tags (Frontend, API, Database, DevOps, etc.).
+>
+> Configuration is optional — PullMatch works out of the box. Add a `.pullmatch.yml` to customize reviewer limits, enable auto-assignment, set up Slack notifications, or exclude specific paths.
+>
+> PullMatch is read-only: it never accesses source code content, only metadata and commit history. Free and open source under the MIT license.
+
+### Categories
+
+- Code Review
+- Developer Tools
+
+### Pricing
+
+- Free (open source, MIT license)
+
+### Screenshots (capture post-deployment)
+
+1. **PR comment example** — A screenshot of a PullMatch reviewer suggestion comment on a real pull request, showing ranked reviewers with scores, domain tags, and context briefs.
+2. **Config file example** — A screenshot of a `.pullmatch.yml` file in a repository showing common configuration options (reviewer limit, auto-assign, excluded paths).
+3. **Installation flow** — A screenshot of the GitHub App install page showing the permissions requested (read-only pull requests and contents).

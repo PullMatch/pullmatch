@@ -5,12 +5,14 @@
   "type": "module",
   "description": "PullMatch API server - GitHub App backend",
   "scripts": {
-    "dev": "node --experimental-strip-types --watch src/index.ts",
-    "start": "node --experimental-strip-types src/index.ts",
+    "dev": "node --env-file=.env --experimental-strip-types --watch src/index.ts",
+    "start": "node --env-file=.env --experimental-strip-types src/index.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/__tests__/*.test.ts"
   },
   "dependencies": {
+    "@pullmatch/shared": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "@octokit/webhooks": "^14.2.0",
     "hono": "^4.7.0"

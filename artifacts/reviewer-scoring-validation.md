@@ -1,6 +1,6 @@
 # PullMatch — Reviewer Scoring Validation
 
-**Date:** 2026-03-25T17:54:11.064Z
+**Date:** 2026-03-28T01:34:44.947Z
 **Repo:** microsoft/vscode
 **PR:** #304772
 **PR Author excluded:** bpasero
@@ -22,57 +22,59 @@ Tie-break:    alphabetical by login (deterministic)
 
 ## Candidate Reviewers Found
 
-Total candidates (bots excluded): **17**
+Total candidates (bots excluded): **19**
 
 | Username | Exact Commits | Dir Commits | Age (days) | Recency | Score |
 |----------|---------------|-------------|------------|---------|-------|
-| @connor4312 | 4 | 5 | 1 | 0.99 | 18.98 |
-| @benibenj | 4 | 0 | 64 | 0.29 | 12.58 |
-| @roblourens | 2 | 3 | 8 | 0.91 | 10.82 |
-| @joshspicer | 2 | 1 | 5 | 0.94 | 8.89 |
-| @vijayupadya | 0 | 7 | 6 | 0.93 | 8.87 |
-| @eleanorjboyd | 0 | 6 | 7 | 0.92 | 7.84 |
-| @meganrogge | 2 | 0 | 75 | 0.17 | 6.33 |
-| @mjbvz | 0 | 3 | 12 | 0.87 | 4.73 |
-| @rebornix | 1 | 0 | 27 | 0.70 | 4.40 |
-| @Copilot | 1 | 0 | 36 | 0.60 | 4.20 |
-| @DonJayamanne | 0 | 2 | 2 | 0.98 | 3.96 |
-| @pwang347 | 0 | 2 | 7 | 0.92 | 3.84 |
-| @hawkticehurst | 1 | 0 | 112 | 0.00 | 3.00 |
-| @jrieken | 1 | 0 | 140 | 0.00 | 3.00 |
-| @lszomoru | 1 | 0 | 104 | 0.00 | 3.00 |
-| @sandy081 | 0 | 1 | 15 | 0.83 | 2.67 |
+| @connor4312 | 4 | 5 | 3 | 0.97 | 18.93 |
+| @benibenj | 4 | 0 | 66 | 0.27 | 12.53 |
+| @roblourens | 2 | 3 | 10 | 0.89 | 10.78 |
+| @joshspicer | 2 | 1 | 7 | 0.92 | 8.84 |
+| @vijayupadya | 0 | 6 | 1 | 0.99 | 7.98 |
+| @eleanorjboyd | 0 | 6 | 10 | 0.89 | 7.78 |
+| @meganrogge | 2 | 0 | 77 | 0.14 | 6.29 |
+| @rebornix | 1 | 0 | 29 | 0.68 | 4.36 |
+| @Copilot | 1 | 0 | 38 | 0.58 | 4.16 |
+| @DonJayamanne | 0 | 2 | 4 | 0.96 | 3.91 |
+| @mjbvz | 0 | 2 | 14 | 0.84 | 3.69 |
+| @eli-w-king | 0 | 1 | 0 | 1.00 | 3.00 |
+| @hawkticehurst | 1 | 0 | 115 | 0.00 | 3.00 |
+| @jrieken | 1 | 0 | 143 | 0.00 | 3.00 |
+| @lszomoru | 1 | 0 | 106 | 0.00 | 3.00 |
+| @isidorn | 0 | 1 | 1 | 0.99 | 2.98 |
+| @lramos15 | 0 | 1 | 1 | 0.99 | 2.98 |
+| @pwang347 | 0 | 1 | 9 | 0.90 | 2.80 |
 
 ## Final Top 3 Reviewers
 
 | Rank | Username | Score | Reasons |
 |------|----------|-------|---------|
-| 1 | @connor4312 | 18.98 | 4 commit(s) to exact changed file(s); 5 commit(s) in the same directory/directories; Most recent commit was 1 day(s) ago |
-| 2 | @benibenj | 12.58 | 4 commit(s) to exact changed file(s); Most recent commit was 64 day(s) ago |
-| 3 | @roblourens | 10.83 | 2 commit(s) to exact changed file(s); 3 commit(s) in the same directory/directories; Most recent commit was 8 day(s) ago |
+| 1 | @connor4312 | 18.93 | 4 commit(s) to exact changed file(s); 5 commit(s) in the same directory/directories; Most recent commit was 3 day(s) ago |
+| 2 | @benibenj | 12.52 | 4 commit(s) to exact changed file(s); Most recent commit was 66 day(s) ago |
+| 3 | @roblourens | 10.77 | 2 commit(s) to exact changed file(s); 3 commit(s) in the same directory/directories; Most recent commit was 10 day(s) ago |
 
 ## Score Breakdown per Reviewer
 
-### 1. @connor4312 (score: 18.98)
+### 1. @connor4312 (score: 18.93)
 
 - Exact file commits: **4** × 3 = 12
 - Directory commits:  **5** × 1 = 5
-- Recency score:      **0.989** × 2 = 1.978 (last commit 1 day(s) ago)
-- **Total: 18.98**
+- Recency score:      **0.967** × 2 = 1.933 (last commit 3 day(s) ago)
+- **Total: 18.93**
 
-### 2. @benibenj (score: 12.58)
+### 2. @benibenj (score: 12.52)
 
 - Exact file commits: **4** × 3 = 12
 - Directory commits:  **0** × 1 = 0
-- Recency score:      **0.289** × 2 = 0.578 (last commit 64 day(s) ago)
-- **Total: 12.58**
+- Recency score:      **0.267** × 2 = 0.533 (last commit 66 day(s) ago)
+- **Total: 12.52**
 
-### 3. @roblourens (score: 10.83)
+### 3. @roblourens (score: 10.77)
 
 - Exact file commits: **2** × 3 = 6
 - Directory commits:  **3** × 1 = 3
-- Recency score:      **0.911** × 2 = 1.822 (last commit 8 day(s) ago)
-- **Total: 10.83**
+- Recency score:      **0.889** × 2 = 1.778 (last commit 10 day(s) ago)
+- **Total: 10.77**
 
 ## Why This Ranking
 
