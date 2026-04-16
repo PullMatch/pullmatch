@@ -9,5 +9,8 @@
     "validate:match": "node --experimental-strip-types scripts/validate-match.ts",
     "typecheck": "pnpm -r typecheck",
     "verify:deploy": "node --experimental-strip-types scripts/verify-deploy.ts"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
   }
 }
