@@ -173,6 +173,9 @@ export default function Home() {
             <a href="/privacy">Privacy</a>
           </li>
           <li>
+            <a href="/terms">Terms</a>
+          </li>
+          <li>
             <a href="mailto:hello@pullmatch.com">Contact</a>
           </li>
         </ul>
